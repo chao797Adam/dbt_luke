@@ -560,7 +560,30 @@ dbt test
 
 **Design Consideration**: Splitting `dbt run` into independent modules prevents the entire pipeline from blindly rerunning due to a failure in a single core fact table, significantly improving cloud debugging efficiency.
 
-## 11. References & Acknowledgements
+## 11. Full-Pipeline Volume Audit (Data Lineage Check)
+
+To verify the health and completeness of the data pipeline, we performed a full-table row count audit across all layers (Raw ➔ Bronze ➔ Silver ➔ Gold). The results perfectly demonstrate the data cleaning funnel and the robustness of the deduplication logic:
+
+| Layer | Table Name | Total Rows |
+| :--- | :--- | :--- |
+| **Raw Layer** | job_postings | 843,097 |
+| **Raw Layer** | raw_job_skills | 3,304,574 |
+| **Bronze Layer** | stg_job_postings | **491,140** |
+| **Bronze Layer** | stg_job_skills | 3,304,574 |
+| **Silver Layer** | int_skill_demand | 960 |
+| **Gold Layer** | fct_job_postings | **491,140** |
+| **Gold Layer** | dim_company | 65,970 |
+| **Gold Layer** | dim_skill | 1,422 |
+| **Gold Layer** | bridge_job_skills | 3,304,574 |
+| **Snapshot Layer** | scd_job_postings | **491,140** |
+
+**Audit Insights & Validation**:
+1. **Data Cleansing (Raw ➔ Bronze)**: The raw `job_postings` dataset starts with **843,097** rows. Through strict deduplication (`row_number() = 1`) and null-key filtering, the Bronze layer accurately reduces this to **491,140** unique jobs, eliminating 352k rows of dirty data.
+2. **Grain Consistency (Bronze ➔ Fact ➔ Snapshot)**: The `fct_job_postings` (Fact table) and the initial `scd_job_postings` (Snapshot) exactly match the Bronze layer at **491,140** rows, proving absolutely zero data inflation (Fan-out) and strict 1 row per job.
+3. **Dimension Convergence (Gold)**: The company dimension collapses to 65,970 unique companies, and the skill dimension represents 1,422 core skills. The intermediate `int_skill_demand` pre-aggregates these into 960 in-demand skills before joining.
+4. **Bridge Expansion**: The `bridge_job_skills` retains the full **3.3 million+** relationship details, ready for BI roll-ups without polluting the Fact table's grain.
+
+## 12. References & Acknowledgements
 
 The architecture inspiration, original dataset, and part of the business logic of this project are referenced from the following open-source project and tutorial. Special thanks:
 
