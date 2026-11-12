@@ -521,3 +521,13 @@ Prior to that, whether he was using a full rebuild or a blind append, the pressu
 **Our Architectural Foresight**:
 Facing the same 500k rows of data, our project avoided the full-rebuild detour from day one and established a production-grade incremental defense directly. Crucially, by using `incremental_predicates` to lock the physical Merge scope to the last 2 days, we completely avoided the daily full-table scans and comparisons of hundreds of thousands of rows. This proves that our architecture was benchmarked against the highest industry standards for **Idempotency** and **Performance Optimization** from the very beginning.
 
+## 10. References & Acknowledgements
+
+The architecture inspiration, original dataset, and part of the business logic of this project are referenced from the following open-source project and tutorial. Special thanks:
+
+- **Original Dataset**: 
+  [lukebarousse/dbt_Analytics_Engineering_Course/releases](https://github.com/lukebarousse/dbt_Analytics_Engineering_Course/releases)
+- **Tutorial Video**: 
+  [YouTube - Analytics Engineering Course](https://www.youtube.com/watch?v=1Bf049kXV2g)
+
+*Note: This project has undergone deep architectural refactoring, incremental defense optimization, and data quality auditing based on the original tutorial.
