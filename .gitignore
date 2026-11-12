@@ -1,0 +1,27 @@
+# dbt specific
+target/
+dbt_packages/
+logs/
+package-lock.yml
+
+# Environment variables and credentials
+.env
+profiles.yml
+.dbt/
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.python-version
+
+# Databricks specific
+.databricks/
+*.tfstate
+*.tfstate.backup
+
+# OS generated files
+.DS_Store
+Thumbs.db

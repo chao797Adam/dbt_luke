@@ -1,0 +1,43 @@
+name: 'luke_dbt_case'
+version: '1.0.0'
+
+# This setting configures which "profile" dbt uses for this project.
+profile: 'luke_dbt_case'
+
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:        
+  - "target"
+  - "dbt_packages"
+
+
+seeds:
+  luke_dbt_case:
+    skill_categories:
+      +schema: bronze
+      +column_types:
+        skill_id: string
+        display_name: string
+        category: string
+        subcategory: string
+
+models:
+  luke_dbt_case:
+    
+    staging:
+      +schema: bronze
+      +materialized: view  
+
+    intermediate:
+      +schema: silver
+      +materialized: table 
+
+    marts:
+      +schema: gold
+      +materialized: table

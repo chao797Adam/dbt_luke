@@ -1,0 +1,19 @@
+models:
+  - name: int_skill_demand
+    description: >
+      One row per skill_id observed in the raw skill rows. 
+      Regrains millions of job-skill pairs into per-skill demand counts.
+      Aggregates from staging to capture all observed skills.
+    columns:
+      - name: skill_id
+        description: Skill key; the grain of this table.
+        data_tests:
+          - not_null
+          - unique
+          
+      - name: postings_with_skill
+        description: >
+          Distinct jobs observed with this skill in staging. 
+          Counts the number of unique job postings requiring this skill.
+        data_tests:
+          - not_null

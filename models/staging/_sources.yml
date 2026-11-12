@@ -1,0 +1,32 @@
+version: 2
+
+sources:
+  - name: raw_sources
+    database: dbt_luke
+    schema: raw
+    tables:
+      - name: job_postings
+        description: "Raw job postings data ingested from Parquet files."
+        columns:
+          - name: job_id
+            description: "Unique identifier for each job posting."
+            data_tests:
+              - unique:
+                  config:
+                    severity: warn
+              - not_null:
+                  config:
+                    severity: warn
+
+      - name: jobs_per_month
+        description: "Monthly aggregation of job postings."
+
+      - name: monthly_summary
+        description: "High-level monthly summary metrics."
+
+      - name: top_locations
+        description: "Top job locations summary."
+      
+      - name: raw_job_skills
+        description: "Raw job skills data ingested from Parquet files."
+        

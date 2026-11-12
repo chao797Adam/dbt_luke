@@ -1,0 +1,74 @@
+version: 2
+
+models:
+  # 1. Fact Table
+  - name: fct_job_postings
+    description: "Core fact table for job postings."
+    columns:
+      - name: job_id
+        description: "Primary key."
+        data_tests:
+          - unique
+          - not_null
+          
+      # ===== new =====
+      - name: salary_min
+        description: "Minimum salary for the job posting."
+        data_tests:
+          - non_negative
+            
+      - name: salary_max
+        description: "Maximum salary for the job posting."
+        data_tests:
+          - non_negative
+            
+      - name: salary_avg
+        description: "Average salary for the job posting."
+        data_tests:
+          - non_negative
+      # =========================
+
+  # 2. Dimension Table - Company
+  - name: dim_company
+    description: "Company dimension with aggregated salary info."
+    columns:
+      - name: company_name
+        description: "Primary key (natural key)."
+        data_tests:
+          - unique
+          - not_null
+
+  # 3. Dimension Table - Skill
+  - name: dim_skill
+    description: "Skill dimension with demand counts."
+    columns:
+      - name: skill_id
+        description: "Primary key."
+        data_tests:
+          - unique
+          - not_null
+
+  # 4. Bridge Table - Job to Skill
+  - name: bridge_job_skills
+    description: "Bridge table mapping jobs to skills."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - job_id
+            - skill_id # test duplicate job_id-skill_id pairs
+            - skill_keyword # test three columns combination for uniqueness, otherwise fail
+    columns:
+      - name: job_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_job_postings')
+                field: job_id
+      - name: skill_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_skill') # parent table related to skill_categories table
+                field: skill_id

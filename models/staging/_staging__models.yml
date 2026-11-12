@@ -1,0 +1,62 @@
+version: 2
+
+models:
+  - name: stg_job_postings
+    description: "Staged job postings detail data."
+    columns:
+      - name: job_id
+        description: "Primary key for job postings."
+        data_tests:
+          - unique  # another test to ensure that the job_id is unique
+          - not_null
+      
+  - name: stg_job_skills
+    description: "Staged job skills detail data."
+    columns:
+      - name: job_id
+        description: "Foreign key to stg_job_postings."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_job_postings') # 👈 this is the Parent (important)
+              field: job_id   # 👈 this is the Parent's primary key
+      - name: skill_id
+        description: "Foreign key to skill_categories."
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('skill_categories')
+              field: skill_id
+
+  - name: stg_jobs_per_month
+    description: "Staged jobs per month summary."
+    columns:
+      - name: month_year
+        data_tests:
+          - not_null
+
+  - name: stg_monthly_summary
+    description: "Staged monthly summary with remote stats."
+    columns:
+      - name: summary_month
+        data_tests:
+          - unique  # another test to ensure that the summary_month is unique
+          - not_null
+      - name: total_postings
+        data_tests:
+          - not_null
+      - name: remote_postings
+        data_tests:
+          - not_null
+  - name: skill_categories
+    description: "Seed reference table for job skills."
+    columns:
+      - name: skill_id
+        description: "Primary key for skill categories."
+        data_tests:
+          - unique       # 👈 
+          - not_null     # 
+      - name: display_name
+        description: "Human-readable name of the skill."
+        data_tests:
+          - not_null     # 👈 
