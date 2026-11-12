@@ -521,7 +521,46 @@ Prior to that, whether he was using a full rebuild or a blind append, the pressu
 **Our Architectural Foresight**:
 Facing the same 500k rows of data, our project avoided the full-rebuild detour from day one and established a production-grade incremental defense directly. Crucially, by using `incremental_predicates` to lock the physical Merge scope to the last 2 days, we completely avoided the daily full-table scans and comparisons of hundreds of thousands of rows. This proves that our architecture was benchmarked against the highest industry standards for **Idempotency** and **Performance Optimization** from the very beginning.
 
-## 10. References & Acknowledgements
+## 10. Production Scheduling: Lakeflow Job Orchestration & Execution
+
+To achieve automated ELT processes in the Databricks cloud, we created a multi-task **Lakeflow Job** (Workflow) to chain Data Ingestion and dbt Transformations. The Job is structured into two main tasks with a strict dependency:
+
+### 10.1 Task 1: Ingestion (The EL Step)
+- **Task Type**: Notebook / Python
+- **Action**: Automatically downloads 12 months of Parquet data files from GitHub releases directly into a Unity Catalog Volume, and registers them as physical tables in the `raw` schema.
+- **Safety**: Idempotency is ensured; if files already exist, the script skips downloading and only re-lands the tables.
+
+### 10.2 Task 2: Transformation (dbt Execution)
+- **Task Type**: dbt (Source: Git provider)
+- **Dependency**: Configured to **run only after Task 1 successfully completes**, ensuring the raw data is ready before transformation.
+- **Action**: Executes a precise 7-step dbt command sequence to ensure cloud execution stability and error traceability:
+
+```bash
+# 1. Install dependency packages (e.g., dbt_utils)
+dbt deps
+
+# 2. Load seed data (e.g., skill_categories)
+dbt seed
+
+# 3. Build the foundational layer (Bronze & Silver)
+dbt run --select staging intermediate
+
+# 4. Build independent dimension tables (e.g., dim_skill)
+dbt run --select dim_skill
+
+# 5. Build Fact tables and downstream dependencies (the + sign automatically captures dependent dims and bridge tables)
+dbt run --select fct_job_postings+
+
+# 6. Execute SCD2 historical snapshot tracking
+dbt snapshot
+
+# 7. Run full-pipeline data quality tests (including Generic and Singular Tests)
+dbt test
+```
+
+**Design Consideration**: Splitting `dbt run` into independent modules prevents the entire pipeline from blindly rerunning due to a failure in a single core fact table, significantly improving cloud debugging efficiency.
+
+## 11. References & Acknowledgements
 
 The architecture inspiration, original dataset, and part of the business logic of this project are referenced from the following open-source project and tutorial. Special thanks:
 
@@ -530,4 +569,3 @@ The architecture inspiration, original dataset, and part of the business logic o
 - **Tutorial Video**: 
   [YouTube - Analytics Engineering Course](https://www.youtube.com/watch?v=1Bf049kXV2g)
 
-*Note: This project has undergone deep architectural refactoring, incremental defense optimization, and data quality auditing based on the original tutorial.
