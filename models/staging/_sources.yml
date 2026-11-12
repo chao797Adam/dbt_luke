@@ -18,15 +18,4 @@ sources:
                   config:
                     severity: warn
 
-      - name: jobs_per_month
-        description: "Monthly aggregation of job postings."
-
-      - name: monthly_summary
-        description: "High-level monthly summary metrics."
-
-      - name: top_locations
-        description: "Top job locations summary."
-      
-      - name: raw_job_skills
-        description: "Raw job skills data ingested from Parquet files."
         
