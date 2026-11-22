@@ -474,7 +474,7 @@ SELECT 'skill_categories', COUNT(*) FROM dbt_luke.bronze.skill_categories;
 
 ## 4. Staging Data Quality Testing (Production-Grade)
 
-14 generic tests implemented in `_staging_models.yml`:
+9 generic tests implemented in `_staging_models.yml`:
 
 ```yaml
 version: 2
@@ -517,7 +517,7 @@ models:
 ```bash
 dbt test --select stg_job_postings stg_job_skills skill_categories --exclude test_type:singular
 ```
-**Verification Result**: `PASS=14 WARN=0 ERROR=0 SKIP=0 TOTAL=14`.
+**Verification Result**: `PASS=9 WARN=0 ERROR=0 SKIP=0 TOTAL=9`.
 
 ### 4.1 Singular Test: Salary Anomaly Monitoring
 
