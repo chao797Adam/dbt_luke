@@ -1030,19 +1030,15 @@ The separation between the incremental Fact and the Snapshot allows current-stat
 
 ## 9. Data Quality Audit: Reconciliation & Engineering Trade-offs
 
-After completing the Gold layer, I compared my project results with the reference tutorial to evaluate data consistency, identify potential quality issues, and review incremental processing decisions.
+After completing the Gold layer, I compared my project results with the reference tutorial to evaluate data consistency, identify potential data quality issues, and review incremental processing decisions.
 
-The comparison focuses on three areas:
-
-- **Data Reconciliation:** Comparing skill demand metrics across job categories and the overall market.
-- **Primary Key Validation:** Examining uniqueness and completeness test results.
-- **Incremental Architecture:** Evaluating deduplication, MERGE behavior, and late-arriving data handling.
+The analysis focuses on data reconciliation, primary key validation, and incremental MERGE design.
 
 ### 9.1 Data Reconciliation — Tutorial vs. My Implementation
 
 **Data Engineer — Skill Demand Comparison**
 
-The following results compare the number of job postings requiring selected skills when filtering for `search_term = 'Data Engineer'`.
+The following results compare skill demand when filtering for `search_term = 'Data Engineer'`.
 
 | Skill | Reference Tutorial | My Project | Difference |
 |---|---:|---:|---:|
@@ -1050,11 +1046,11 @@ The following results compare the number of job postings requiring selected skil
 | SQL | 187,451 | 185,900 | 1,551 |
 | AWS | 121,066 | 120,279 | 787 |
 
-My implementation produces slightly lower demand counts for these skills.
+My implementation produces slightly lower counts for these skills.
 
 **Whole Market — Skill Demand Comparison**
 
-When removing the job category filter, the five leading skills produce identical absolute demand counts.
+When removing the job category filter, the top five skills produce identical absolute demand counts.
 
 | Skill | Tutorial Count | My Count | Tutorial % | My % |
 |---|---:|---:|---:|---:|
@@ -1066,11 +1062,11 @@ When removing the job category filter, the five leading skills produce identical
 
 The matching absolute counts provide a useful consistency check for the overall skill demand calculations.
 
-The small percentage differences are consistent with different rounding precision, although denominator differences should also be checked before attributing every discrepancy to rounding.
+The small percentage differences are consistent with differences in rounding precision, although denominator differences should also be considered.
 
 **Data Analyst — Skill Demand Comparison**
 
-A larger difference appears when filtering for `search_term = 'Data Analyst'`.
+Larger differences appear when filtering for `search_term = 'Data Analyst'`.
 
 | Skill | Tutorial Count | My Count | Difference | Tutorial % | My % |
 |---|---:|---:|---:|---:|---:|
@@ -1082,43 +1078,34 @@ A larger difference appears when filtering for `search_term = 'Data Analyst'`.
 
 **Engineering Analysis**
 
-These comparisons show that overall skill demand can match while category-level results differ.
+These comparisons demonstrate that overall skill demand can match while category-level results differ.
 
-Potential explanations include:
+Potential explanations include differences in deduplication, filtering, incremental processing states, or job classifications.
 
-- Different deduplication rules or incremental processing states.
-- Differences in the job postings included in each category.
-- Changes in job attributes or search-term classifications.
-- Differences in filtering and aggregation logic.
-
-The comparisons alone do not establish which factor caused each discrepancy.
+The comparison alone does not establish the exact cause of every discrepancy.
 
 **Engineering Takeaway**
 
-Data reconciliation should validate both overall metrics and detailed business segments.
-
-Matching aggregate totals does not guarantee that every category-level result is identical.
+Data reconciliation should validate both aggregate metrics and individual business segments. Matching overall totals does not guarantee identical category-level results.
 
 ### 9.2 Data Quality Findings — Primary Key Validation
 
-A key difference between the implementations appears in the Fact table's dbt test results.
+A significant difference between the implementations appears in the Fact table's dbt test results.
 
 **Reference Tutorial — Reported Test Failures**
-
-The tutorial execution logs showed:
 
 ```text
 FAIL 6255 not_null_fct_job_postings_job_id
 FAIL 63207 unique_fct_job_postings_job_id
 ```
 
-These results indicate that the tutorial's Fact table violated its configured primary-key completeness and uniqueness requirements at the time of testing.
+These results indicate that the reference Fact table violated its configured business-key completeness and uniqueness requirements at the time of testing.
 
-The failure counts are dbt test failure counts and should not automatically be interpreted as the number of distinct affected job IDs.
+The reported failure counts should not automatically be interpreted as the number of distinct affected job IDs.
 
 **My Implementation — Validation Results**
 
-My Fact model applies source-level filtering and deduplication before loading data into the Gold layer.
+The `fct_job_postings` model filters and deduplicates source records before incremental MERGE.
 
 ```sql
 QUALIFY ROW_NUMBER() OVER (
@@ -1129,103 +1116,114 @@ QUALIFY ROW_NUMBER() OVER (
 
 The current Fact table contains **491,140 rows**, and both the `unique` and `not_null` tests on `job_id` passed.
 
-The complete Gold layer also passed all 14 configured tests:
+All 14 configured Gold-layer tests also passed:
 
 ```text
 PASS=14 WARN=0 ERROR=0 SKIP=0 TOTAL=14
 ```
 
-**Why This Matters**
+**Engineering Takeaway**
 
-A reliable Fact table must maintain its declared grain.
+The tests provide evidence that the current Gold models satisfy their configured uniqueness, completeness, referential integrity, and salary validation requirements.
 
-For `fct_job_postings`, the intended grain is one row per `job_id`.
+However, passing tests describe the validated data state, rather than guaranteeing correctness under every future incremental scenario.
 
-Duplicate or missing job IDs can affect job counts, skill demand percentages, and downstream analytical relationships.
+### 9.3 Incremental Architecture — Final Design & Trade-offs
 
-However, a passing test confirms the table's state at execution time. It does not guarantee that future incremental runs cannot introduce duplicates.
+The `fct_job_postings` model uses incremental materialization with the `merge` strategy and `job_id` as its unique business key.
+
+**1. Incremental MERGE Configuration**
+
+```sql
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key='job_id'
+) }}
+```
+
+This configuration allows dbt to match incoming records against existing Fact records using `job_id`.
+
+Existing matches can be updated, while unmatched records can be inserted.
+
+**2. Source Lookback Window**
+
+```sql
+{% if is_incremental() %}
+    WHERE search_date >= (
+        SELECT date_sub(MAX(search_date), 2)
+        FROM {{ this }}
+    )
+{% endif %}
+```
+
+The two-day lookback allows recent records to be reconsidered during incremental processing.
+
+Compared with filtering only records strictly newer than the maximum processed date, this approach can capture some late-arriving or updated records within the lookback window.
+
+**Limitation:** Records arriving outside the lookback window may be missed unless a wider backfill or full refresh is performed.
+
+**Engineering Reflection — Incremental Lookback Strategy**
+
+The reference tutorial uses a strict `search_date > MAX(search_date)` filter, which is sufficient for its static dataset but may exclude late-arriving records with the same or earlier search dates.
+
+My implementation uses a two-day lookback window to reconsider recent source records during incremental MERGE operations.
+
+This improves the pipeline's ability to process recent updates and late-arriving records, while introducing additional processing overhead.
+
+The lookback window does not guarantee complete late-arriving data coverage. Records outside the window may still require backfilling or a full refresh.
+
+**3. Source Deduplication**
+
+```sql
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY job_id
+    ORDER BY search_date DESC, searched_at DESC
+) = 1
+```
+
+The source is deduplicated before MERGE to ensure that each incoming batch contains at most one record per `job_id`.
+
+The ordering prioritizes the most recent `search_date`, followed by `searched_at`.
+
+This reduces the risk of multiple incoming records competing to update the same target row.
+
+**4. Why I Removed `incremental_predicates`**
+
+During development, I evaluated a destination-side MERGE optimization that restricted matching to recent target records.
+
+However, the source lookback window and destination matching window could become misaligned.
+
+An existing `job_id` outside the destination window might then be treated as an unmatched record and inserted again.
+
+To avoid this risk, I removed the destination-side `incremental_predicates` configuration.
+
+The final implementation allows MERGE to match incoming `job_id` values against the full target table.
+
+**Trade-off:** This prioritizes correct key matching over potentially reducing the destination scan range.
+
+**5. Explicit Column Selection**
+
+The Fact model explicitly selects its 22 required business columns rather than using `SELECT *` in the final output.
+
+This makes the model's intended schema clear and reduces unintended propagation of upstream columns.
+
+Explicit column selection improves schema control, although it does not replace an enforced dbt model contract.
+
+**6. Remaining Limitations & Future Improvements**
+
+The current design provides a practical incremental processing baseline, but further improvements are possible:
+
+- Test repeated incremental runs to verify that row counts and business-key uniqueness remain stable.
+- Validate updates to existing job IDs and late-arriving records.
+- Consider a wider lookback window or a separate backfill strategy when required.
+- Benchmark MERGE performance before introducing destination-side optimizations.
 
 **Engineering Takeaway**
 
-Automated uniqueness, completeness, and relationship tests provide measurable evidence of data quality.
+The final design prioritizes data correctness and maintainability over premature performance optimization.
 
-The comparison demonstrates the importance of validating business keys rather than relying only on successful model execution.
-
-### 9.3 Incremental Architecture — Design Decisions & Limitations
-
-The `fct_job_postings` model uses incremental materialization with the `merge` strategy.
-
-The objective is to process new or recently updated records without rebuilding the entire Fact table on every execution.
-
-**1. Source Deduplication**
-
-Incoming records are deduplicated using `ROW_NUMBER()` and the business key `job_id`.
-
-This prevents multiple source rows for the same job from being passed into a single MERGE operation.
-
-**2. Incremental Source Filtering**
-
-The model uses a lookback window based on the maximum `search_date` already present in the target table.
-
-```sql
-WHERE search_date >= (
-    SELECT date_sub(MAX(search_date), 2)
-    FROM {{ this }}
-)
-```
-
-This approach allows records within the lookback period to be reconsidered during incremental execution.
-
-**Trade-off:** Records arriving outside the lookback window may be missed unless a wider backfill or full refresh is performed.
-
-**3. MERGE Matching and Destination Predicates**
-
-The implementation also uses a destination-side incremental predicate:
-
-```sql
-incremental_predicates = [
-    "DBT_INTERNAL_DEST.search_date >= date_sub(current_date(), 2)"
-]
-```
-
-This predicate limits which existing target rows are eligible for matching during the MERGE operation.
-
-However, the source filter and destination predicate use different reference dates:
-
-- Source window: Based on `MAX(search_date)` in the target.
-- Destination window: Based on `current_date()`.
-
-These windows are not guaranteed to align.
-
-An existing `job_id` may be included in the source batch but excluded from the destination matching window. In that situation, MERGE may treat the record as unmatched and insert another row with the same business key.
-
-**Engineering Limitation**
-
-The destination-side predicate is therefore a potential correctness risk and should not be described as a guaranteed protection against duplicates.
-
-For this project, a safer baseline is to remove the destination-side `incremental_predicates` configuration while retaining source deduplication, the `unique_key`, and incremental MERGE.
-
-Any performance optimization should be evaluated after verifying that it preserves correct matching behavior.
-
-**4. Explicit Column Selection**
-
-The Fact model explicitly selects its required business columns rather than relying on `SELECT *`.
-
-This makes the intended output schema easier to review and reduces the risk of unintentionally propagating new upstream columns.
-
-However, explicit column selection is not equivalent to an enforced dbt model contract.
-
-**5. Validation and Future Improvements**
-
-The current implementation has successfully passed its configured Gold-layer tests.
-
-Further validation should include repeated incremental executions, updates to existing job IDs, late-arriving records, and row-count reconciliation.
-
-**Engineering Takeaway**
-
-Incremental processing involves a trade-off between efficiency and correctness.
-
-Source deduplication, MERGE key matching, and data quality tests must work together. Performance optimizations should not compromise business-key uniqueness or cause valid updates to be missed.
+By combining source deduplication, business-key MERGE matching, a controlled lookback window, and automated dbt tests, the pipeline provides a clear foundation for incremental processing while acknowledging its remaining limitations.
 
 ---
 
