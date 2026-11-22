@@ -235,18 +235,123 @@ The original `job_salary` column is retained for traceability and validation.
 **Engineering Consideration:** Hourly and yearly salaries cannot be directly compared. The Staging model extracts the payment period but does not automatically convert salaries into a common annual amount.
 
 ### 3.4 JSON Array Parsing with Custom Macro
+
+**Problem — Semi-Structured Job Extensions**
+
+Raw data profiling revealed that `job_extensions_raw` contains JSON arrays stored as strings, including job benefits, employment types, and posting information.
+
+**Data Profiling:**
+
+```sql
+SELECT DISTINCT job_extensions_raw
+FROM dbt_luke.raw.job_postings
+WHERE error IS NOT TRUE;
+```
+
+The key challenges identified were:
+
+- **Semi-structured data:** Benefits such as `Health insurance`, `Dental insurance`, and `Paid time off` are embedded in JSON arrays.
+- **Variable element ordering:** The same benefits may appear in different positions within an array.
+- **Missing values:** Some records contain `NULL` instead of a JSON array.
+- **Analytical usability:** Individual benefits need to be converted into structured columns for downstream analysis.
+
+**Solution — FROM_JSON and Reusable dbt Macro**
+
+First, the JSON string is parsed into an array using Databricks `FROM_JSON`:
+
+```sql
+FROM_JSON(job_extensions_raw, 'array<string>') AS job_extensions
+```
+
+A reusable dbt macro, `unpack_extensions`, then converts selected array elements into boolean columns:
+
 ```sql
 {% macro unpack_extensions(array_col, keywords) %}
     {% for kw in keywords %}
-        coalesce(array_contains({{ array_col }}, '{{ kw }}'), false) as has_{{ kw | replace(' ', '_') | lower }}
+        coalesce(
+            array_contains({{ array_col }}, '{{ kw }}'), false
+        ) as has_{{ kw | replace(' ', '_') | lower }}
         {%- if not loop.last -%},{%- endif -%}
     {% endfor %}
 {% endmacro %}
 ```
-One-line call:
+
+**One-line Macro Call:**
+
 ```sql
-{{ unpack_extensions('job_extensions', ['Health insurance', 'Dental insurance', 'Paid time off', 'No degree mentioned']) }}
+{{ unpack_extensions('job_extensions', [
+    'Health insurance',
+    'Dental insurance',
+    'Paid time off',
+    'No degree mentioned'
+]) }}
 ```
+
+**Validation — Before vs. After Transformation**
+
+To validate the transformation, I expanded the dbt macro logic into a standalone Databricks SQL query. This allows the original JSON string and the resulting boolean columns to be compared side by side.
+
+```sql
+WITH parsed AS (
+    SELECT
+        job_id,
+        job_extensions_raw,
+        FROM_JSON(
+            job_extensions_raw,
+            'array<string>'
+        ) AS job_extensions
+    FROM dbt_luke.raw.job_postings
+    WHERE error IS NOT TRUE
+      AND job_id IS NOT NULL
+      AND job_extensions_raw IS NOT NULL
+)
+
+SELECT
+    job_id,
+    job_extensions_raw,
+
+    COALESCE(
+        ARRAY_CONTAINS(job_extensions, 'Health insurance'), FALSE
+    ) AS has_health_insurance,
+
+    COALESCE(
+        ARRAY_CONTAINS(job_extensions, 'Dental insurance'), FALSE
+    ) AS has_dental_insurance,
+
+    COALESCE(
+        ARRAY_CONTAINS(job_extensions, 'Paid time off'), FALSE
+    ) AS has_paid_time_off,
+
+    COALESCE(
+        ARRAY_CONTAINS(job_extensions, 'No degree mentioned'), FALSE
+    ) AS has_no_degree_mentioned
+
+FROM parsed
+LIMIT 10;
+```
+
+![Job Extensions Before and After](Assets/job_extensions_before_after.png)
+
+*Figure: Before-and-after validation showing how semi-structured JSON arrays are converted into analytical boolean columns.*
+
+**Result — Structured Boolean Columns**
+
+The transformation converts selected JSON array elements into four analytical boolean columns:
+
+- `has_health_insurance`
+- `has_dental_insurance`
+- `has_paid_time_off`
+- `has_no_degree_mentioned`
+
+These fields can be used directly in downstream analysis without repeatedly parsing the original JSON strings.
+
+**Engineering Consideration**
+
+- **Order independence:** `ARRAY_CONTAINS` identifies keywords regardless of their position in the array.
+- **Reusability:** The `unpack_extensions` macro avoids repetitive SQL and simplifies maintenance.
+- **NULL handling:** `COALESCE(..., FALSE)` converts missing arrays and unmatched keywords into `false`, producing consistent non-null boolean indicators.
+
+**Business Trade-off:** A `false` value means that a benefit was not identified in the source array. It does not necessarily mean the employer does not offer that benefit.
 
 ### 3.5 Deduplication — Raw Duplicate Detection & Grain Enforcement
 
