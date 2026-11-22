@@ -1038,13 +1038,13 @@ The following results compare skill demand for `search_term = 'Data Engineer'` b
 
 **Reference Tutorial — Skill Demand Results**
 
-![Reference Tutorial Skill Demand](images/reference_tutorial_skill_demand.png)
+![Reference Tutorial Skill Demand](Assets/reference_tutorial_skill_demand.png)
 
 *Source: Luke Barousse's dbt course, 06:14:11.*
 
 **My Implementation — Databricks Skill Demand Results**
 
-![My Project Skill Demand](images/my_project_skill_demand.png)
+![My Project Skill Demand](Assets/my_project_skill_demand.png)
 
 **Raw Data Quality Investigation**
 
@@ -1057,7 +1057,7 @@ To investigate the differences, I audited the raw job postings dataset.
 | Excess rows from duplicate non-NULL IDs | 194,555 | 23.08% |
 | Distinct non-NULL `job_id` | 491,140 | 58.25% |
 
-![Raw Job Postings Audit](images/raw_job_postings_audit.png)
+![Raw Job Postings Audit](Assets/raw_job_postings_audit.png)
 
 My staging model excludes NULL `job_id` values and deduplicates records by `job_id`, producing 491,140 unique job postings in the Gold Fact table.
 
