@@ -1259,6 +1259,14 @@ The comparison alone does not establish the exact cause of every discrepancy.
 
 Data reconciliation should validate both aggregate metrics and individual business segments. Matching overall totals does not guarantee identical category-level results.
 
+**Final Row Count Reconciliation**
+
+A final review of the reference tutorial confirms that the deduplicated job posting count matches my implementation exactly at **491,140 records**, providing additional validation of the deduplication logic and final dataset consistency.
+
+![Luke Job Postings Row Count Reconciliation](Assets/luke_job_postings_row_count_reconciliation.png)
+
+*Figure: Reference Tutorial — Final Job Posting Row Count Reconciliation (491,140 Records).*
+
 ### 7.2 Data Quality Findings — Primary Key Validation
 
 A significant difference between the implementations appears in the Fact table's dbt test results.
