@@ -39,24 +39,16 @@ Register Parquet files into the `raw` schema:
 CREATE OR REPLACE TABLE dbt_luke.raw.raw_job_skills AS
 SELECT * FROM parquet.`/Volumes/dbt_luke/raw/source/raw_job_skills.parquet`;
 
--- Register jobs_per_month table
-CREATE OR REPLACE TABLE dbt_luke.raw.jobs_per_month AS
-SELECT * FROM parquet.`/Volumes/dbt_luke/raw/source/jobs_per_month.parquet`;
-
--- Register monthly_summary table
-CREATE OR REPLACE TABLE dbt_luke.raw.monthly_summary AS
-SELECT * FROM parquet.`/Volumes/dbt_luke/raw/source/monthly_summary.parquet`;
-
--- Register top_locations table
-CREATE OR REPLACE TABLE dbt_luke.raw.top_locations AS
-SELECT * FROM parquet.`/Volumes/dbt_luke/raw/source/top_locations.parquet`;
+-- Register job_postings table
+CREATE OR REPLACE TABLE dbt_luke.raw.job_postings AS
+SELECT * FROM read_files('/Volumes/dbt_luke/raw/source/job_postings/*.parquet', format => 'parquet')
 ```
 
 ### 1.3 Batch Preview with Python Loop
 Avoid Databricks UI overwriting `display()`:
 
 ```python
-tables = ["job_postings", "jobs_per_month", "monthly_summary", "raw_job_skills", "top_locations"]
+tables = ["job_postings", "raw_job_skills"]
 
 for t in tables:
     print(f"================ {t.upper()} ================")
