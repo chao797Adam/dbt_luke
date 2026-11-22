@@ -356,6 +356,14 @@ These fields can be used directly in downstream analysis without repeatedly pars
 
 **Business Trade-off:** A `false` value means that a benefit was not identified in the source array. It does not necessarily mean the employer does not offer that benefit.
 
+**Grain Preservation**
+
+The transformation uses `FROM_JSON` and `ARRAY_CONTAINS` rather than `EXPLODE` to extract job benefits.
+
+This approach converts semi-structured attributes into boolean columns without creating additional rows or changing the existing record-level grain.
+
+As a result, the Staging model maintains **one row per `job_id`**, as enforced by the separate deduplication logic, while exposing benefit attributes for downstream analysis.
+
 ### 3.5 Deduplication — Raw Duplicate Detection & Grain Enforcement
 
 Before implementing deduplication, I profiled the raw `job_postings` table to identify missing and duplicate business keys.
