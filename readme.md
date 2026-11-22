@@ -88,6 +88,44 @@ WHERE error IS NOT TRUE;
 
 ## 3. Deep Dive: stg_job_postings (dbt Bronze / Staging)
 
+**Development Evolution — From Initial Staging to Advanced Transformations**
+
+The initial Staging model focused on basic data cleaning and grain enforcement:
+
+- Excluding failed scraping records using `error IS NOT TRUE`.
+- Removing records with missing business keys using `job_id IS NOT NULL`.
+- Applying `ROW_NUMBER() = 1` to establish one row per `job_id`.
+
+![Initial Staging Model](Assets/initial_staging_deduplication.png)
+
+*Figure: Initial Staging implementation, focusing on validity filtering and deduplication before additional transformations were introduced.*
+
+**Further Raw Data Profiling — Two Key Findings**
+
+After implementing the initial Staging model, further inspection of the Raw dataset revealed two columns that required more advanced transformations:
+
+**1. `job_salary` — Inconsistent Salary Text**
+
+The `job_salary` column contains salary information in different text formats, including ranges, abbreviations such as `K` and `M`, different currencies, and different payment periods.
+
+These values could not be reliably aggregated or compared as numeric salaries without additional parsing.
+
+This led to the development of the reusable `parse_salary` macro, which extracts `salary_min` and `salary_max`, alongside SQL transformations for `salary_avg`, `salary_period`, and `salary_currency`.
+
+**2. `job_extensions_raw` — Semi-Structured JSON Arrays**
+
+The `job_extensions_raw` column contains JSON arrays with job-related attributes, including benefits such as health insurance, dental insurance, and paid time off.
+
+These attributes were embedded within arrays rather than available as individual analytical columns.
+
+This led to the use of `FROM_JSON()` to parse the array and the reusable `unpack_extensions` macro to generate boolean benefit indicators.
+
+**Engineering Outcome**
+
+The Staging model evolved from a simple filtering and deduplication query into a more complete transformation layer that combines data cleaning, salary normalization, JSON parsing, reusable dbt macros, and business-key grain enforcement.
+
+The following sections explain these transformations in detail, particularly the salary parsing logic in Section 3.3 and JSON array processing in Section 3.4.
+
 ### 3.1 Text Prefix Cleaning
 - **Profiling**: `WHERE job_via LIKE 'via %'`.
 - **Cleaning**: `REGEXP_REPLACE(job_via, '^via ', '')`.

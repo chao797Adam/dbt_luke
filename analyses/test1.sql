@@ -13,7 +13,7 @@ with
             *,
             row_number() over (partition by job_id order by search_date desc) as row_num
         from source
-        where row_num = 1
     )
 select *
 from final
+where row_num = 1
