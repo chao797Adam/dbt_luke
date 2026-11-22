@@ -1024,15 +1024,52 @@ The analysis focuses on data reconciliation, primary key validation, and increme
 
 **Data Engineer — Skill Demand Comparison**
 
-The following results compare skill demand when filtering for `search_term = 'Data Engineer'`.
+The following results compare skill demand for `search_term = 'Data Engineer'` between the reference tutorial and my implementation.
 
-| Skill | Reference Tutorial | My Project | Difference |
-|---|---:|---:|---:|
-| Python | 191,777 | 189,970 | 1,807 |
-| SQL | 187,451 | 185,900 | 1,551 |
-| AWS | 121,066 | 120,279 | 787 |
+| Skill | Reference Count | Reference Demand % | My Count | My Demand % | Difference |
+|---|---:|---:|---:|---:|---:|
+| Python | 191,777 | 64.2% | 189,970 | 64.20% | 1,807 |
+| SQL | 187,451 | 62.7% | 185,900 | 62.82% | 1,551 |
+| AWS | 121,066 | 40.5% | 120,279 | 40.65% | 787 |
+| Azure | 116,488 | 39.0% | 115,652 | 39.08% | 836 |
+| Spark | 103,529 | 34.7% | 102,899 | 34.77% | 630 |
 
-My implementation produces slightly lower counts for these skills.
+*Demand % represents the proportion of distinct job postings requiring each skill within the analysis population. Reference percentages are rounded to one decimal place, while my results use two decimal places.*
+
+**Reference Tutorial — Skill Demand Results**
+
+![Reference Tutorial Skill Demand](images/reference_tutorial_skill_demand.png)
+
+*Source: Luke Barousse's dbt course, 06:14:11.*
+
+**My Implementation — Databricks Skill Demand Results**
+
+![My Project Skill Demand](images/my_project_skill_demand.png)
+
+**Raw Data Quality Investigation**
+
+To investigate the differences, I audited the raw job postings dataset.
+
+| Metric | Count | % of Raw Records |
+|---|---:|---:|
+| Total raw records | 843,097 | 100.00% |
+| Records with NULL `job_id` | 157,402 | 18.67% |
+| Excess rows from duplicate non-NULL IDs | 194,555 | 23.08% |
+| Distinct non-NULL `job_id` | 491,140 | 58.25% |
+
+![Raw Job Postings Audit](images/raw_job_postings_audit.png)
+
+My staging model excludes NULL `job_id` values and deduplicates records by `job_id`, producing 491,140 unique job postings in the Gold Fact table.
+
+**Engineering Interpretation**
+
+My implementation produces slightly lower skill demand counts than the reference tutorial, while the overall demand percentages remain closely aligned.
+
+Both implementations use `COUNT(DISTINCT job_id)` to prevent duplicate job counts within each skill. Since this aggregation automatically excludes NULL job IDs, filtering NULL IDs alone does not explain the differences.
+
+Differences in upstream filtering, deduplication, or source data may contribute to the discrepancies. However, the exact cause has not been confirmed.
+
+**Key Takeaway:** Data reconciliation helps validate analytical consistency, identify data quality issues, and ensure that metrics respect the intended business grain.
 
 **Whole Market — Skill Demand Comparison**
 
