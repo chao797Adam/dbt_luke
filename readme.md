@@ -631,17 +631,24 @@ To avoid exponential data explosion (Fan-out) caused by Many-to-Many `JOIN`s dir
 
 After rigorous cleaning in the Staging layer, the `marts` layer (Gold) adopts the classic **Kimball Star Schema**.
 
-### 6.1 Directory Structure
-```text
-models/
-├── staging/          # Bronze: Basic cleaning (stg_*)
-├── intermediate/     # Silver: Pre-aggregation to prevent fan-out (int_*)
-└── marts/            # Gold: Star Schema, BI-ready outputs
-    ├── fct_job_postings.sql
-    ├── dim_company.sql
-    ├── dim_skill.sql
-    └── bridge_job_skills.sql
-```
+### 6.1 End-to-End dbt Lineage & Model Dependencies
+
+The following DAG was generated using `dbt docs` and illustrates the actual model dependencies from raw sources to the Gold layer.
+
+![End-to-End dbt Lineage DAG](Assets/dbt_end_to_end_lineage.png)
+
+*Figure 1: End-to-End dbt Lineage — Raw Sources, Staging, Intermediate, Gold Models, and SCD2 Snapshot.*
+
+**Key Architectural Decisions**
+
+- **Fact-first dependencies:** `fct_job_postings` is the upstream dependency for `dim_company` and `bridge_job_skills`.
+- **Grain-aware aggregation:** `int_skill_demand` aggregates job-skill records to one row per `skill_id`, preserving the grain of `dim_skill`.
+- **Bridge alignment:** `bridge_job_skills` joins Staging Skills with the Gold Fact to retain valid job-skill associations.
+- **Independent SCD2 tracking:** `scd_job_postings` depends directly on `stg_job_postings`, independently of the Fact model.
+
+**Engineering Takeaway**
+
+The dbt DAG visualizes actual model dependencies and helps explain the transformation order, grain changes, and separation of responsibilities across the pipeline.
 
 ### 6.2 Data Lineage & Model Dependencies
 
