@@ -2,10 +2,7 @@
     config(
         materialized='incremental',
         incremental_strategy='merge',
-        unique_key='job_id',
-        incremental_predicates = [
-            "DBT_INTERNAL_DEST.search_date >= date_sub(current_date(), 2)"
-        ]
+        unique_key='job_id'
     )
 }}
 
