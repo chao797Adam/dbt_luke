@@ -1014,27 +1014,13 @@ The separation between the incremental Fact and the Snapshot allows current-stat
 
 ---
 
-## 7. Architecture Review: Why SCD2 Snapshot on a Fact Table is Wrong
-- **The Issue**: The original tutorial used a dbt `snapshot` (SCD Type 2) on the Fact table to track changes.
-- **The Insight**: In Kimball dimensional modeling, **fact tables record immutable events**. They should not have SCD2 applied, as it causes infinite storage growth and logical confusion. SCD2 is strictly for **Dimension tables**. 
-- **The Correct Design**: Kept the Fact table as an incremental `MERGE` table (only keeping the latest state), and relied on Databricks' native Delta Lake Time Travel for history tracking if ever needed.
-
----
-
-## 8. Architecture Limitation: The `dim_company` Lineage Trap
-- **The Issue**: In the final data model, `dim_company` is derived directly from `fct_job_postings` (since company info is embedded in the job post). 
-- **The Limitation**: Because `dim_company` shares the exact same lineage/root as the fact table, running a `relationships` test (checking if every fact's `company_id` exists in `dim_company`) is structurally redundant. Since the dimension is derived from the fact, an orphaned key is impossible unless transformation logic drops rows. 
-- **Best Practice**: In a real enterprise scenario, `dim_company` should ideally be sourced from an independent Master Data Management (MDM) system or a dedicated CRM table, not inferred from job postings.
-
----
-
-## 9. Data Quality Audit: Reconciliation & Engineering Trade-offs
+## 7. Data Quality Audit: Reconciliation & Engineering Trade-offs
 
 After completing the Gold layer, I compared my project results with the reference tutorial to evaluate data consistency, identify potential data quality issues, and review incremental processing decisions.
 
 The analysis focuses on data reconciliation, primary key validation, and incremental MERGE design.
 
-### 9.1 Data Reconciliation — Tutorial vs. My Implementation
+### 7.1 Data Reconciliation — Tutorial vs. My Implementation
 
 **Data Engineer — Skill Demand Comparison**
 
@@ -1088,7 +1074,7 @@ The comparison alone does not establish the exact cause of every discrepancy.
 
 Data reconciliation should validate both aggregate metrics and individual business segments. Matching overall totals does not guarantee identical category-level results.
 
-### 9.2 Data Quality Findings — Primary Key Validation
+### 7.2 Data Quality Findings — Primary Key Validation
 
 A significant difference between the implementations appears in the Fact table's dbt test results.
 
@@ -1128,7 +1114,7 @@ The tests provide evidence that the current Gold models satisfy their configured
 
 However, passing tests describe the validated data state, rather than guaranteeing correctness under every future incremental scenario.
 
-### 9.3 Incremental Architecture — Final Design & Trade-offs
+### 7.3 Incremental Architecture — Final Design & Trade-offs
 
 The `fct_job_postings` model uses incremental materialization with the `merge` strategy and `job_id` as its unique business key.
 
@@ -1227,16 +1213,16 @@ By combining source deduplication, business-key MERGE matching, a controlled loo
 
 ---
 
-## 10. Production Scheduling: Lakeflow Job Orchestration & Execution
+## 8. Production Scheduling: Lakeflow Job Orchestration & Execution
 
 To achieve automated ELT processes in the Databricks cloud, we created a multi-task **Lakeflow Job** (Workflow) to chain Data Ingestion and dbt Transformations. The Job is structured into two main tasks with a strict dependency:
 
-### 10.1 Task 1: Ingestion (The EL Step)
+### 8.1 Task 1: Ingestion (The EL Step)
 - **Task Type**: Notebook / Python
 - **Action**: Automatically downloads 12 months of Parquet data files from GitHub releases directly into a Unity Catalog Volume, and registers them as physical tables in the `raw` schema.
 - **Safety**: Idempotency is ensured; if files already exist, the script skips downloading and only re-lands the tables.
 
-### 10.2 Task 2: Transformation (dbt Execution)
+### 8.2 Task 2: Transformation (dbt Execution)
 - **Task Type**: dbt (Source: Git provider)
 - **Dependency**: Configured to **run only after Task 1 successfully completes**, ensuring the raw data is ready before transformation.
 - **Action**: Executes a precise 7-step dbt command sequence to ensure cloud execution stability and error traceability:
@@ -1268,12 +1254,14 @@ dbt test
 
 ---
 
-## 11. Full-Pipeline Volume Audit (Data Lineage Check)
+## 9. Full-Pipeline Volume Audit (Data Lineage Check)
 
-To verify the health and completeness of the data pipeline, we performed a full-table row count audit across all layers (Raw ➔ Bronze ➔ Silver ➔ Gold). The results perfectly demonstrate the data cleaning funnel and the robustness of the deduplication logic:
+To validate data consistency across the pipeline, I performed a row-count audit across the Raw, Bronze, Silver, Gold, and Snapshot layers.
+
+The results illustrate how source records are cleaned, deduplicated, aggregated, and transformed into analytical models.
 
 | Layer | Table Name | Total Rows |
-| :--- | :--- | :--- |
+|---|---|---:|
 | **Raw Layer** | job_postings | 843,097 |
 | **Raw Layer** | raw_job_skills | 3,304,574 |
 | **Bronze Layer** | stg_job_postings | **491,140** |
@@ -1285,15 +1273,45 @@ To verify the health and completeness of the data pipeline, we performed a full-
 | **Gold Layer** | bridge_job_skills | 3,304,574 |
 | **Snapshot Layer** | scd_job_postings | **491,140** |
 
-**Audit Insights & Validation**:
-1. **Data Cleansing (Raw ➔ Bronze)**: The raw `job_postings` dataset starts with **843,097** rows. Through strict deduplication (`row_number() = 1`) and null-key filtering, the Bronze layer accurately reduces this to **491,140** unique jobs, eliminating 352k rows of dirty data.
-2. **Grain Consistency (Bronze ➔ Fact ➔ Snapshot)**: The `fct_job_postings` (Fact table) and the initial `scd_job_postings` (Snapshot) exactly match the Bronze layer at **491,140** rows, proving absolutely zero data inflation (Fan-out) and strict 1 row per job.
-3. **Dimension Convergence (Gold)**: The company dimension collapses to 65,970 unique companies, and the skill dimension represents 1,422 core skills. The intermediate `int_skill_demand` pre-aggregates these into 960 in-demand skills before joining.
-4. **Bridge Expansion**: The `bridge_job_skills` retains the full **3.3 million+** relationship details, ready for BI roll-ups without polluting the Fact table's grain.
+### Audit Insights & Validation
+
+**1. Data Cleaning and Deduplication (Raw → Bronze)**
+
+The Raw `job_postings` dataset contains 843,097 records.
+
+After filtering invalid records, excluding NULL business keys, and deduplicating by `job_id`, the Staging layer contains **491,140 unique job postings**.
+
+The reduction of 351,957 rows includes invalid records, missing business keys, and repeated observations of existing jobs. Not all removed rows necessarily represent data quality errors.
+
+**2. Grain Consistency (Bronze → Fact)**
+
+Both `stg_job_postings` and `fct_job_postings` contain **491,140 rows** in the audited state.
+
+This is consistent with the intended grain of one row per `job_id`, supported by the configured uniqueness and non-null tests.
+
+The initial `scd_job_postings` Snapshot also contains 491,140 rows. However, the Snapshot is designed to accumulate historical versions, so its row count may increase after subsequent changes are detected.
+
+**3. Dimension Aggregation (Gold)**
+
+The Company Dimension contains 65,970 unique company names, while the Skill Dimension contains 1,422 skills.
+
+The Intermediate `int_skill_demand` model aggregates detailed job-skill observations into **960 skills with observed demand** before joining the Skill Dimension.
+
+This preserves the intended dimension grain and avoids unnecessary row multiplication.
+
+**4. Bridge Table Preservation**
+
+The `bridge_job_skills` model retains **3,304,574 job-skill associations**, preserving detailed keyword variations.
+
+These relationships are stored separately from the Fact table, allowing many-to-many skill analysis without changing the Fact's one-row-per-job grain.
+
+**Engineering Takeaway**
+
+The row-count audit provides an additional reconciliation check across pipeline layers. Combined with dbt data quality tests, it helps validate grain consistency, aggregation behavior, and the separation of current-state analytical models from historical Snapshot records.
 
 ---
 
-## 12. References & Acknowledgements
+## 10. References & Acknowledgements
 
 The architecture inspiration, original dataset, and part of the business logic of this project are referenced from the following open-source project and tutorial. Special thanks:
 
