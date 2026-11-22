@@ -154,13 +154,31 @@ REGEXP_REPLACE(job_via, '^via ', '') AS source_platform
 For example, `via LinkedIn` becomes `LinkedIn`, making the values cleaner for downstream reporting and grouping.
 
 ### 3.2 Defensive Boolean Casting
+
+**Data Profiling:** Inspection of the Raw `job_work_from_home` column revealed only two distinct values: `true` and `NULL`.
+
 ```sql
-case
-    when lower(trim(cast(job_work_from_home as string))) = 'true' then true
-    when lower(trim(cast(job_work_from_home as string))) = 'false' then false
-    else false
-end as job_work_from_home
+SELECT DISTINCT job_work_from_home
+FROM dbt_luke.raw.job_postings;
 ```
+
+![Work From Home Profiling](Assets/job_work_from_home_profiling.png)
+
+*Figure: Raw data profiling showing true and NULL values.*
+
+**Design Decision:** Applied defensive boolean casting to handle potential future variations in source data while preserving missing or unrecognized values as `NULL`.
+
+```sql
+CASE
+    WHEN LOWER(TRIM(CAST(job_work_from_home AS STRING))) = 'true' THEN TRUE
+    WHEN LOWER(TRIM(CAST(job_work_from_home AS STRING))) = 'false' THEN FALSE
+    ELSE NULL
+END AS job_work_from_home
+```
+
+**Business Rationale:** Missing remote-work information does not necessarily mean remote work is unavailable. Preserving `NULL` avoids incorrectly classifying unknown values as `false`.
+
+**Result:** A standardized nullable boolean field that preserves the distinction between confirmed and unknown remote-work status.
 
 ### 3.3 Complex Salary Text Extraction
 - **Period**: `regexp_extract` for `year/hour`, `nullif` for empties.

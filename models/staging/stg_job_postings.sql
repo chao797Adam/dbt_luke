@@ -34,7 +34,7 @@ with
                 then true
                 when lower(trim(cast(job_work_from_home as string))) = 'false'
                 then false
-                else false
+                else null
             end as job_work_from_home,
             job_posted_at,
 
