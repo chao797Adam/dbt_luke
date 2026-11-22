@@ -643,20 +643,43 @@ models/
     └── bridge_job_skills.sql
 ```
 
-### 6.2 Star Schema Design
+### 6.2 Data Lineage & Model Dependencies
+
+The Gold layer models are built according to their upstream dependencies rather than as independent tables.
+
+| Model | Upstream Dependencies | Grain |
+|---|---|---|
+| `fct_job_postings` | `stg_job_postings` | One row per `job_id` |
+| `dim_company` | `fct_job_postings` | One row per `company_name` |
+| `dim_skill` | `skill_categories`, `int_skill_demand` | One row per `skill_id` |
+| `bridge_job_skills` | `stg_job_skills`, `fct_job_postings` | One row per `(job_id, skill_id, skill_keyword)` |
+
+**Dependency Design**
+
+- **Fact-first dependencies:** `fct_job_postings` must be built before `dim_company` and `bridge_job_skills`, since both reference the Fact model.
+- **Independent skill dimension:** `int_skill_demand` aggregates job-skill observations to one row per `skill_id`. Joining this result with `skill_categories` preserves the Skill Dimension's grain and avoids join fan-out.
+- **Bridge alignment:** `bridge_job_skills` joins `stg_job_skills` with `fct_job_postings`, ensuring its job-skill associations belong to jobs present in the Gold Fact table.
+
+**Engineering Takeaway**
+
+dbt's `ref()` dependencies form a Directed Acyclic Graph (DAG), allowing dbt to determine the correct model execution order.
+
+Understanding the lineage clarifies why the Fact must precede certain downstream models, while the Skill Dimension can be built independently.
+
+### 6.3 Star Schema Design
 - **Fact Table (`fct_job_postings`)**: Records immutable business events, containing foreign keys to dimensions and metrics like salary/benefits.
 - **Dimension Tables (`dim_company`, `dim_skill`)**: Store descriptive attributes.
 - **Bridge Table (`bridge_job_skills`)**: Resolves the **Many-to-Many** relationship between jobs and skills.
 
-### 6.3 Architecture Review: Why SCD2 on a Fact Table is Wrong
+### 6.4 Architecture Review: Why SCD2 on a Fact Table is Wrong
 - **Insight**: Fact tables record immutable events. Applying SCD2 here leads to infinite storage growth and logical confusion.
 - **Correct Design**: Keep facts as incremental `MERGE` tables. For history, rely on Delta Lake Time Travel.
 
-### 6.4 Architecture Limitation: The `dim_company` Lineage Trap
+### 6.5 Architecture Limitation: The `dim_company` Lineage Trap
 - **The Limitation**: `dim_company` is derived from `fct_job_postings`. Because they share the same lineage root, an orphaned key is structurally impossible, making the `relationships` test redundant.
 - **Best Practice**: In a real enterprise scenario, `dim_company` should be sourced from an independent MDM system.
 
-### 6.5 Bridge Table Many-to-Many & Grain Traps
+### 6.6 Bridge Table Many-to-Many & Grain Traps
 
 **Bridge Table Purpose**
 
@@ -710,7 +733,7 @@ Nevertheless, this design provides protection against future differences caused 
 
 **Key takeaway:** Staging validates source-level relationships, while the Gold Bridge aligns job-skill associations with the Fact table's actual job population.
 
-### 6.6 Anti-Pattern: The `dim_company` Lineage Trap & Redundant Test
+### 6.7 Anti-Pattern: The `dim_company` Lineage Trap & Redundant Test
 
 In the Marts layer tests, the original tutorial runs a `relationships` test from `fct_job_postings.company_name` to `dim_company.company_name`, which successfully passes.
 **However, this test is architecturally meaningless (redundant).**
@@ -721,7 +744,7 @@ The SQL for `dim_company` is simply extracting `distinct company_name` directly 
 **Best Practice**:
 In a real production environment, `dim_company` should be sourced from an independent Master Data Management (MDM) system or CRM table. Only when the dimension has an independent source can the `relationships` test truly validate referential integrity and prevent the fact table from referencing companies that don't exist in the master data.
 
-### 6.7 Historical Tracking: SCD Type 2 Snapshot Design
+### 6.8 Historical Tracking: SCD Type 2 Snapshot Design
 
 While SCD2 is not recommended directly on Fact tables, we need to track historical changes for specific attributes of job postings. We created an SCD2 snapshot based on the deduplicated `stg_job_postings` and stored it in a separate `snapshots` schema:
 
@@ -745,7 +768,7 @@ While SCD2 is not recommended directly on Fact tables, we need to track historic
 
 *Note: Under the `check` strategy, dbt ignores `updated_at` and directly compares `check_cols`. It must be based on the `stg` layer (deduplicated with `rn=1`), otherwise it triggers a `Multiple source rows matched` error.*
 
-### 6.8 Practical Verification: How to Prove SCD2 Works
+### 6.9 Practical Verification: How to Prove SCD2 Works
 
 To verify that the snapshot truly captures historical changes, we performed a "data tampering" drill:
 
@@ -761,7 +784,7 @@ To verify that the snapshot truly captures historical changes, we performed a "d
    - Old record: `job_work_from_home = null`, `dbt_valid_to` marked as current time (expired).
    - New record: `job_work_from_home = true`, `dbt_valid_to = NULL` (currently active).
 
-### 6.9 SCD2 Tracking Boundary: Raw Ledger vs. Snapshot State Machine
+### 6.10 SCD2 Tracking Boundary: Raw Ledger vs. Snapshot State Machine
 
 Through practice, we reached a deep architectural conclusion: **Why does a Snapshot only capture the history of the "most recent state"?**
 
