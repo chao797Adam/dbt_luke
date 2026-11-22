@@ -588,71 +588,80 @@ WHERE salary_period = 'year'
 
 ---
 
----
+## 5. Intermediate Layer: Skill Demand Aggregation & Fan-out Prevention
 
-## 5. Intermediate Layer: Preventing Fan-out
-- **Solution**: Use `GROUP BY` in the Intermediate layer to pre-aggregate data before joining dimensions, massively reducing row count and improving performance.
+The Intermediate layer transforms detailed job-skill relationships into aggregated skill demand metrics before building the Gold Skill Dimension.
 
-### 5.1 Profiling Query: Deduplication Audit (Checking for Fan-out)
+### 5.1 Data Profiling: Duplicate Job-Skill Associations
 
-Before moving into the Intermediate layer to build aggregated tables, we must verify that the `stg_job_skills` bridge table does not contain duplicate records for the same `job_id` under the same `skill_id` (which would indicate a Fan-out issue).
+The `stg_job_skills` model contains job-skill associations at the grain of `(job_id, skill_id, skill_keyword)`.
 
-The following profiling SQL intuitively compares the "total row count" with the "distinct row count" to pinpoint duplicates:
+A single job may contain multiple keywords referring to the same skill. Therefore, `(job_id, skill_id)` is not necessarily unique.
+
+To identify these variations, I compared the total number of job-skill observations with the number of distinct jobs for each skill:
 
 ```sql
-select 
+SELECT
     skill_id,
-    count(job_id) as total_job_per_skill,          -- Total row count for this skill (including duplicates)
-    count(distinct job_id) as unique_job_per_skill,-- Distinct job_id count for this skill
-    count(job_id) - count(distinct job_id) as dup_rows, -- The difference is the number of duplicate rows
-    case 
-        when count(job_id) = count(distinct job_id) then 'OK' 
-        else 'DUPLICATED' 
-    end as status
-from dbt_luke.bronze.stg_job_skills
-group by skill_id
-order by dup_rows desc, total_job_per_skill desc;
+    COUNT(job_id) AS total_job_per_skill,
+    COUNT(DISTINCT job_id) AS unique_job_per_skill,
+    COUNT(job_id) - COUNT(DISTINCT job_id) AS duplicate_observations
+FROM {{ ref('stg_job_skills') }}
+GROUP BY skill_id
+ORDER BY duplicate_observations DESC;
 ```
 
-**Result & Conclusion**: If `dup_rows` is 0 across the board, it proves that the `(job_id, skill_id)` composite key is unique and no underlying Fan-out has occurred. This provides a guarantee of data quality for the next step: direct `GROUP BY` aggregation in the Intermediate layer.
+**Engineering Finding**
 
-### 5.2 Intermediate Layer Design: `int_skill_demand` & Fan-out Prevention
+Multiple observations for the same job-skill pair do not necessarily indicate invalid data. They may represent legitimate keyword variations.
 
-To avoid exponential data explosion (Fan-out) caused by Many-to-Many `JOIN`s directly on the Fact table (`fct_job_postings`), we built the `int_skill_demand` model in the Intermediate layer.
+However, using `COUNT(job_id)` directly would overstate skill demand.
 
-**Design Logic**:
-1. **Aggregate First, Join Later**: In the Intermediate layer, we use `GROUP BY skill_id` to pre-aggregate millions of detailed rows from `stg_job_skills` into per-skill demand counts (`postings_with_skill`).
-2. **Eliminating Fan-out**: Because of this pre-aggregation, when this lightweight `int_skill_demand` table is finally joined with the Fact table (or Dimension tables), **there is only one row per skill**, completely preventing the data inflation issue where "a job with 5 skills becomes 5 rows after a Join".
-3. **Performance Boost**: By pushing heavy aggregation operations down to the Intermediate layer, the final BI-ready Marts layer only needs to process lightweight aggregated results, significantly improving query performance.
+**Design Decision:** Use `COUNT(DISTINCT job_id)` to measure how many unique job postings require each skill.
+
+### 5.2 Intermediate Model: `int_skill_demand`
+
+The Intermediate model aggregates millions of job-skill observations into one row per `skill_id`.
+
+```sql
+SELECT
+    skill_id,
+    COUNT(DISTINCT job_id) AS postings_with_skill
+FROM {{ ref('stg_job_skills') }}
+GROUP BY skill_id
+```
+
+**Why Aggregate Before Joining?**
+
+Joining detailed job-skill records directly with `skill_categories` would produce multiple rows per skill, violating the intended grain of `dim_skill`.
+
+Instead, `int_skill_demand` aggregates the data first.
+
+This provides three benefits:
+
+- **Grain preservation:** One row per `skill_id` before joining the Skill Dimension.
+- **Accurate demand:** `COUNT(DISTINCT job_id)` avoids double-counting keyword variations.
+- **Reduced data volume:** Millions of detailed associations are summarized into a much smaller aggregated model.
+
+**Engineering Takeaway**
+
+The Intermediate layer separates detailed job-skill relationships from skill-level demand metrics. Aggregating to the required grain before joining prevents unintended row multiplication in `dim_skill`.
 
 ---
 
 ## 6. Data Modeling & Marts Layer (Gold)
 
-After rigorous cleaning in the Staging layer, the `marts` layer (Gold) adopts the classic **Kimball Star Schema**.
+The Gold layer provides BI-ready analytical models built from cleaned Staging data and aggregated Intermediate results.
+
+The design consists of a Job Fact, Company and Skill Dimensions, a Job-Skill Bridge, and a separate SCD2 Snapshot for historical tracking.
 
 ### 6.1 End-to-End dbt Lineage & Model Dependencies
 
-The following DAG was generated using `dbt docs` and illustrates the actual model dependencies from raw sources to the Gold layer.
+The following DAG was generated using `dbt docs` and illustrates the actual dependencies from raw sources to Gold models and historical snapshots.
 
 ![End-to-End dbt Lineage DAG](Assets/dbt_end_to_end_lineage.png)
 
 *Figure 1: End-to-End dbt Lineage — Raw Sources, Staging, Intermediate, Gold Models, and SCD2 Snapshot.*
-
-**Key Architectural Decisions**
-
-- **Fact-first dependencies:** `fct_job_postings` is the upstream dependency for `dim_company` and `bridge_job_skills`.
-- **Grain-aware aggregation:** `int_skill_demand` aggregates job-skill records to one row per `skill_id`, preserving the grain of `dim_skill`.
-- **Bridge alignment:** `bridge_job_skills` joins Staging Skills with the Gold Fact to retain valid job-skill associations.
-- **Independent SCD2 tracking:** `scd_job_postings` depends directly on `stg_job_postings`, independently of the Fact model.
-
-**Engineering Takeaway**
-
-The dbt DAG visualizes actual model dependencies and helps explain the transformation order, grain changes, and separation of responsibilities across the pipeline.
-
-### 6.2 Data Lineage & Model Dependencies
-
-The Gold layer models are built according to their upstream dependencies rather than as independent tables.
 
 | Model | Upstream Dependencies | Grain |
 |---|---|---|
@@ -660,148 +669,348 @@ The Gold layer models are built according to their upstream dependencies rather 
 | `dim_company` | `fct_job_postings` | One row per `company_name` |
 | `dim_skill` | `skill_categories`, `int_skill_demand` | One row per `skill_id` |
 | `bridge_job_skills` | `stg_job_skills`, `fct_job_postings` | One row per `(job_id, skill_id, skill_keyword)` |
+| `scd_job_postings` | `stg_job_postings` | Historical versions per `job_id` |
 
-**Dependency Design**
+**Key Architectural Decisions**
 
-- **Fact-first dependencies:** `fct_job_postings` must be built before `dim_company` and `bridge_job_skills`, since both reference the Fact model.
-- **Independent skill dimension:** `int_skill_demand` aggregates job-skill observations to one row per `skill_id`. Joining this result with `skill_categories` preserves the Skill Dimension's grain and avoids join fan-out.
-- **Bridge alignment:** `bridge_job_skills` joins `stg_job_skills` with `fct_job_postings`, ensuring its job-skill associations belong to jobs present in the Gold Fact table.
+- **Fact-first dependencies:** `fct_job_postings` must be built before `dim_company` and `bridge_job_skills`.
+- **Grain-aware aggregation:** `int_skill_demand` aggregates job-skill observations before constructing `dim_skill`, preventing join fan-out.
+- **Bridge alignment:** `bridge_job_skills` references the Gold Fact to retain only associations belonging to existing Fact records.
+- **Independent SCD2 tracking:** `scd_job_postings` reads directly from Staging, separating historical tracking from incremental Fact processing.
 
 **Engineering Takeaway**
 
-dbt's `ref()` dependencies form a Directed Acyclic Graph (DAG), allowing dbt to determine the correct model execution order.
+dbt uses `ref()` and `source()` dependencies to construct a Directed Acyclic Graph (DAG), determining the correct model execution order.
 
-Understanding the lineage clarifies why the Fact must precede certain downstream models, while the Skill Dimension can be built independently.
+The DAG explains why some Gold models depend on the Fact while others can be built independently.
 
-### 6.3 Star Schema Design
-- **Fact Table (`fct_job_postings`)**: Records immutable business events, containing foreign keys to dimensions and metrics like salary/benefits.
-- **Dimension Tables (`dim_company`, `dim_skill`)**: Store descriptive attributes.
-- **Bridge Table (`bridge_job_skills`)**: Resolves the **Many-to-Many** relationship between jobs and skills.
+### 6.2 Star Schema Design
 
-### 6.4 Architecture Review: Why SCD2 on a Fact Table is Wrong
-- **Insight**: Fact tables record immutable events. Applying SCD2 here leads to infinite storage growth and logical confusion.
-- **Correct Design**: Keep facts as incremental `MERGE` tables. For history, rely on Delta Lake Time Travel.
+The analytical model separates job postings, descriptive dimensions, and many-to-many skill relationships.
 
-### 6.5 Architecture Limitation: The `dim_company` Lineage Trap
-- **The Limitation**: `dim_company` is derived from `fct_job_postings`. Because they share the same lineage root, an orphaned key is structurally impossible, making the `relationships` test redundant.
-- **Best Practice**: In a real enterprise scenario, `dim_company` should be sourced from an independent MDM system.
+- **Fact Table — `fct_job_postings`:** Contains one row per job posting, including salary, benefits, company name, and other job attributes.
+- **Company Dimension — `dim_company`:** Contains one row per company name, with aggregated job posting counts and comparable salary metrics.
+- **Skill Dimension — `dim_skill`:** Contains one row per skill, including skill classifications and demand counts.
+- **Bridge Table — `bridge_job_skills`:** Connects job postings with their associated skills while preserving keyword variations.
 
-### 6.6 Bridge Table Many-to-Many & Grain Traps
+**Why a Bridge Table?**
+
+One job can require multiple skills, and one skill can appear in multiple jobs.
+
+This creates a many-to-many relationship.
+
+The Bridge stores these associations separately so the Fact table can retain its intended grain of one row per job posting.
+
+### 6.3 Incremental Fact Model: `fct_job_postings`
+
+The Fact table is materialized incrementally using the `merge` strategy and `job_id` as its business key.
+
+**Design Objectives**
+
+- Maintain one current row per `job_id`.
+- Deduplicate incoming records before merging.
+- Process recent source records incrementally.
+- Validate uniqueness and completeness using dbt tests.
+
+The source records are deduplicated using:
+
+```sql
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY job_id
+    ORDER BY search_date DESC, searched_at DESC
+) = 1
+```
+
+**Engineering Consideration**
+
+Deduplication ensures that each incremental source batch contains at most one row per `job_id`.
+
+However, `unique_key` alone does not enforce physical uniqueness in the target table. Incremental merge conditions must also allow existing records to be matched correctly.
+
+The Gold-layer `unique` and `not_null` tests provide additional validation of the resulting Fact table.
+
+### 6.4 Company Dimension: `dim_company`
+
+The Company Dimension is derived from `fct_job_postings`.
+
+```sql
+WITH job_postings AS (
+    SELECT *
+    FROM {{ ref('fct_job_postings') }}
+)
+
+SELECT
+    company_name,
+    COUNT(*) AS total_job_postings,
+    ROUND(
+        AVG(
+            CASE
+                WHEN salary_currency = 'USD'
+                 AND salary_period = 'year'
+                THEN salary_avg
+            END
+        ),
+        2
+    ) AS avg_salary_year
+FROM job_postings
+WHERE company_name IS NOT NULL
+GROUP BY company_name
+```
+
+**Design Decision**
+
+The Company Dimension uses `company_name` as its grain because the available source data does not provide an independent company master identifier.
+
+Salary averages are restricted to USD annual salaries to avoid mixing different currencies and payment periods.
+
+**Architecture Limitation**
+
+Because `dim_company` is derived directly from the Fact, testing whether every non-null Fact company exists in the Dimension provides limited additional assurance under the current transformation logic.
+
+In a production environment, an independent company master dataset or CRM source would provide stronger entity management and referential validation.
+
+### 6.5 Skill Dimension: `dim_skill`
+
+The Skill Dimension combines reference skill metadata with aggregated demand metrics.
+
+```sql
+WITH skill_categories AS (
+    SELECT *
+    FROM {{ ref('skill_categories') }}
+),
+
+observations AS (
+    SELECT *
+    FROM {{ ref('int_skill_demand') }}
+)
+
+SELECT
+    skill_id,
+    display_name,
+    category,
+    subcategory,
+    COALESCE(postings_with_skill, 0) AS postings_with_skill
+FROM skill_categories
+LEFT JOIN observations USING (skill_id)
+ORDER BY postings_with_skill DESC
+```
+
+**Design Decision**
+
+The `LEFT JOIN` retains all skills from the reference dataset, including skills with no observed job postings.
+
+Because both inputs contain at most one row per `skill_id`, the join preserves the intended Skill Dimension grain.
+
+`COALESCE` converts missing demand counts to zero.
+
+**Engineering Takeaway**
+
+Pre-aggregating demand in the Intermediate layer avoids joining millions of detailed job-skill records directly into the Skill Dimension.
+
+### 6.6 Bridge Table: Many-to-Many Relationships & Grain
 
 **Bridge Table Purpose**
 
-The `bridge_job_skills` model connects job postings in `fct_job_postings` with skills in `dim_skill`, resolving their many-to-many relationship.
+The `bridge_job_skills` model connects job postings in `fct_job_postings` with skills represented in `dim_skill`.
 
-An `INNER JOIN` with `fct_job_postings` retains only job-skill associations belonging to valid Fact records.
+The Bridge is constructed from `stg_job_skills` and aligned with the Gold Fact using an `INNER JOIN`.
 
-The bridge preserves `skill_keyword` variations, resulting in a grain of `(job_id, skill_id, skill_keyword)`. Because multiple keywords may map to the same job-skill pair, downstream demand calculations should use `COUNT(DISTINCT job_id)` to avoid double-counting job postings.
+```sql
+WITH job_skills AS (
+    SELECT
+        job_id,
+        skill_id,
+        skill_keyword
+    FROM {{ ref('stg_job_skills') }}
+),
 
-When building the `bridge_job_skills` (bridging the Fact and Skill Dimension), we encountered a classic Many-to-Many grain conflict:
-- **Business Reality**: For the same `job_id` and `skill_id`, text extraction may yield multiple different `skill_keyword`s (e.g., `pub/sub`, `google pub`, `pubsub`). This means the composite of all three columns is unique, but `job_id + skill_id` alone is not.
-- **Testing Trap**: Testing uniqueness solely on `(job_id, skill_id)` results in massive test failures (100k+ duplicates), which can mislead developers into blindly deduplicating and losing valuable keyword context.
+job_postings AS (
+    SELECT job_id
+    FROM {{ ref('fct_job_postings') }}
+)
 
-**Solution & Test Config**:
-To balance "retaining keyword details" with "bridge consistency," the true Grain of the Bridge table must be declared as `(job_id, skill_id, skill_keyword)`.
-We used `dbt_utils.unique_combination_of_columns` in `_marts_models.yml` to lock this down perfectly:
-
-```yaml
-  - name: bridge_job_skills
-    description: "Bridge table mapping jobs to skills, retaining keyword variations."
-    data_tests:
-      - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - job_id
-            - skill_id
-            - skill_keyword # Test grain must exactly match the table design
-    columns:
-      - name: job_id
-        data_tests:
-          - not_null
-          - relationships:
-              to: ref('fct_job_postings')
-              field: job_id
-      - name: skill_id
-        data_tests:
-          - not_null
-          - relationships:
-              to: ref('dim_skill')
-              field: skill_id
+SELECT
+    p.job_id,
+    s.skill_id,
+    s.skill_keyword
+FROM job_skills s
+INNER JOIN job_postings p
+    ON s.job_id = p.job_id
 ```
 
-**Engineering Reflection — Why Join the Fact Table Instead of Using Staging Directly?**
+**Grain Design**
 
-Initially, I assumed `bridge_job_skills` could simply reuse `stg_job_skills`, since both tables share the same columns and grain.
+The Bridge grain is:
 
-However, the `INNER JOIN` with `fct_job_postings` serves an important purpose: it ensures that every job-skill association in the Gold Bridge references a job that actually exists in the Gold Fact table.
+`(job_id, skill_id, skill_keyword)`
 
-In the current dataset, the join produces the same rows as `stg_job_skills` because the Staging relationships tests pass and the Fact contains the same set of job IDs.
+A single `(job_id, skill_id)` pair may have multiple keyword variations, such as `pub/sub`, `google pub`, and `pubsub`.
 
-Nevertheless, this design provides protection against future differences caused by incremental processing, additional Fact filtering, or synchronization delays.
+Testing uniqueness only on `(job_id, skill_id)` would incorrectly classify these legitimate variations as duplicates.
 
-**Key takeaway:** Staging validates source-level relationships, while the Gold Bridge aligns job-skill associations with the Fact table's actual job population.
+Therefore, the composite uniqueness test includes all three columns.
 
-### 6.7 Anti-Pattern: The `dim_company` Lineage Trap & Redundant Test
+**Bridge Test Configuration**
 
-In the Marts layer tests, the original tutorial runs a `relationships` test from `fct_job_postings.company_name` to `dim_company.company_name`, which successfully passes.
-**However, this test is architecturally meaningless (redundant).**
+```yaml
+- name: bridge_job_skills
+  description: "Bridge table mapping jobs to skills, retaining keyword variations."
+  data_tests:
+    - dbt_utils.unique_combination_of_columns:
+        combination_of_columns:
+          - job_id
+          - skill_id
+          - skill_keyword
 
-**Root Cause**:
-The SQL for `dim_company` is simply extracting `distinct company_name` directly from `fct_job_postings`. They share the exact same lineage. Since the dimension is derived from the fact, an orphaned key is structurally impossible unless transformation logic drops rows. Running this test is like "proving your father is your father."
+  columns:
+    - name: job_id
+      data_tests:
+        - not_null
+        - relationships:
+            to: ref('fct_job_postings')
+            field: job_id
 
-**Best Practice**:
-In a real production environment, `dim_company` should be sourced from an independent Master Data Management (MDM) system or CRM table. Only when the dimension has an independent source can the `relationships` test truly validate referential integrity and prevent the fact table from referencing companies that don't exist in the master data.
+    - name: skill_id
+      data_tests:
+        - not_null
+        - relationships:
+            to: ref('dim_skill')
+            field: skill_id
+```
 
-### 6.8 Historical Tracking: SCD Type 2 Snapshot Design
+**Engineering Reflection — Why Join the Fact Instead of Using Staging Directly?**
 
-While SCD2 is not recommended directly on Fact tables, we need to track historical changes for specific attributes of job postings. We created an SCD2 snapshot based on the deduplicated `stg_job_postings` and stored it in a separate `snapshots` schema:
+Initially, I assumed `bridge_job_skills` could simply reuse `stg_job_skills`, since both models have the same columns and grain.
+
+However, joining with `fct_job_postings` ensures that every job-skill association in the Gold Bridge references a job present in the Gold Fact.
+
+In the current dataset, the join retains the same records because the Staging relationships tests pass and the Fact contains the same set of job IDs.
+
+Nevertheless, this approach keeps the Bridge aligned with the Fact if future incremental processing, filtering, or synchronization differences occur.
+
+**Trade-off:** Unmatched associations are silently excluded by the `INNER JOIN`, so relationship tests and reconciliation remain necessary to detect unexpected data loss.
+
+**Engineering Takeaway**
+
+Staging tests validate source-level relationships, while the Gold Bridge aligns job-skill associations with the Fact table's actual job population.
+
+### 6.7 Gold Layer Data Quality Validation
+
+After building the Marts models, 14 generic tests were executed to validate the Gold layer.
+
+**Test Coverage**
+
+| Validation | Purpose |
+|---|---|
+| `unique` / `not_null` | Validate Fact and Dimension business keys |
+| `dbt_utils.unique_combination_of_columns` | Validate Bridge grain |
+| `relationships` | Validate Bridge references to Fact and Skill Dimension |
+| `non_negative` | Validate non-negative salary metrics |
+
+**Execution Result**
+
+```text
+PASS=14 WARN=0 ERROR=0 SKIP=0 TOTAL=14
+```
+
+All 14 Gold-layer tests passed.
+
+This confirms that the current Marts data satisfies the configured business-key, grain, referential integrity, and salary validation rules.
+
+### 6.8 Historical Tracking: SCD Type 2 Snapshot
+
+The project uses a separate dbt Snapshot to track changes in job posting attributes over time.
+
+Rather than applying historical versioning directly to the incremental Fact table, the Snapshot reads from the deduplicated Staging model.
 
 ```sql
 {% snapshot scd_job_postings %}
     {{ config(
-      target_schema='snapshots',        
+      target_schema='snapshots',
       unique_key='job_id',
       strategy='check',
       check_cols=[
-        'search_term', 'search_date', 'search_location', 'job_title', 
-        'company_name', 'job_location', 'source_platform', 'job_schedule_type', 
-        'job_work_from_home', 'job_posted_at', 'job_salary', 'salary_min', 
-        'salary_max', 'salary_avg', 'salary_period', 'salary_currency', 
-        'has_health_insurance', 'has_dental_insurance', 'has_paid_time_off', 'has_no_degree_mentioned'
+        'search_term', 'search_date', 'search_location',
+        'job_title', 'company_name', 'job_location',
+        'source_platform', 'job_schedule_type',
+        'job_work_from_home', 'job_posted_at',
+        'job_salary', 'salary_min', 'salary_max',
+        'salary_avg', 'salary_period', 'salary_currency',
+        'has_health_insurance', 'has_dental_insurance',
+        'has_paid_time_off', 'has_no_degree_mentioned'
       ]
     )}}
-    select * from {{ ref('stg_job_postings') }}
+
+    SELECT *
+    FROM {{ ref('stg_job_postings') }}
+
 {% endsnapshot %}
 ```
 
-*Note: Under the `check` strategy, dbt ignores `updated_at` and directly compares `check_cols`. It must be based on the `stg` layer (deduplicated with `rn=1`), otherwise it triggers a `Multiple source rows matched` error.*
+**Why Snapshot Staging Instead of the Fact?**
 
-### 6.9 Practical Verification: How to Prove SCD2 Works
+The Snapshot tracks changes in the latest deduplicated job state independently of the Fact table's incremental merge logic.
 
-To verify that the snapshot truly captures historical changes, we performed a "data tampering" drill:
+The Fact supports current-state analytics, while the Snapshot maintains historical versions when monitored attributes change.
 
-1. **Initial State**: The `Senior Data Engineer` role at `Fraser Health` has `job_work_from_home = null`. Run `dbt snapshot` to record version 1.
-2. **Simulate Source Data Change**:
-   ```sql
-   UPDATE dbt_luke.raw.job_postings
-   SET job_work_from_home = true
-   WHERE job_title = 'Senior Data Engineer' AND company_name = 'Fraser Health';
-   ```
-3. **Run Pipeline**: Execute `dbt run --select stg_job_postings` and `dbt snapshot`.
-4. **Verify Results**: Query the snapshot table, and two rows appear:
-   - Old record: `job_work_from_home = null`, `dbt_valid_to` marked as current time (expired).
-   - New record: `job_work_from_home = true`, `dbt_valid_to = NULL` (currently active).
+Under the `check` strategy, dbt compares the configured `check_cols` to detect changes.
 
-### 6.10 SCD2 Tracking Boundary: Raw Ledger vs. Snapshot State Machine
+**Trade-off:** The Snapshot only captures changes visible at execution time. Intermediate changes between Snapshot runs may be missed.
 
-Through practice, we reached a deep architectural conclusion: **Why does a Snapshot only capture the history of the "most recent state"?**
+### 6.9 Practical Verification: SCD2 Change Tracking
 
-1. **Raw Layer (Raw Ledger)**: It may perform daily overwrites (`UPDATE`) or appends (`APPEND`). If it's an `UPDATE`, the old data is physically destroyed, and history is permanently lost.
-2. **Staging Layer (Daily Funnel)**: Using `row_number() = 1`, it masks the complex update mechanisms of the Raw layer, outputting only a **unique "latest slice"** downstream every day.
-3. **Snapshot Layer (Historical Polaroid)**: It doesn't process massive ledgers. It focuses solely on the "latest slice" fed by the Staging layer. If any content changes (based on `check_cols`), it takes a photo, seals the old version, and generates a new version.
+To validate the Snapshot, I simulated a source data change.
 
-**Conclusion**: SCD2 does not track all raw scraping logs; instead, it tracks the **"State Machine" history of substantive changes in business attributes**. Without the Snapshot, the Staging layer outputs the latest state daily, and history vanishes upon overwrite; the Snapshot guards this final timeline defense.
+**1. Initial State**
 
----
+A `Senior Data Engineer` posting at `Fraser Health` had `job_work_from_home = NULL`.
+
+An initial `dbt snapshot` execution recorded the first version.
+
+**2. Simulate Source Change**
+
+```sql
+UPDATE dbt_luke.raw.job_postings
+SET job_work_from_home = TRUE
+WHERE job_title = 'Senior Data Engineer'
+  AND company_name = 'Fraser Health';
+```
+
+**3. Rebuild Staging and Run Snapshot**
+
+```bash
+dbt run --select stg_job_postings
+dbt snapshot
+```
+
+**4. Validate Historical Versions**
+
+The Snapshot recorded two versions for the changed job:
+
+- **Previous version:** `job_work_from_home = NULL`, with `dbt_valid_to` populated.
+- **Current version:** `job_work_from_home = TRUE`, with `dbt_valid_to = NULL`.
+
+**Result**
+
+The test demonstrated that the Snapshot can expire an existing version and insert a new current version when a monitored attribute changes.
+
+### 6.10 SCD2 Tracking Boundary: Raw Data vs. Snapshot History
+
+The Snapshot does not automatically preserve every historical scraping observation.
+
+Instead, it records changes in the latest job state presented by `stg_job_postings` during each Snapshot execution.
+
+**Layer Responsibilities**
+
+- **Raw Layer:** Stores source observations available for ingestion and reprocessing.
+- **Staging Layer:** Cleans and deduplicates records to one latest row per `job_id`.
+- **Snapshot Layer:** Compares the current Staging state with previously captured versions and maintains SCD2 validity periods.
+
+**Engineering Takeaway**
+
+SCD2 Snapshots provide historical state tracking, but their completeness depends on the source state and execution frequency.
+
+The separation between the incremental Fact and the Snapshot allows current-state analytics and historical change tracking to serve different purposes without combining both responsibilities in one model.
 
 ---
 
