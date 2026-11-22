@@ -327,12 +327,15 @@ SELECT
     ) AS has_no_degree_mentioned
 
 FROM parsed
+ORDER BY
+    ARRAY_CONTAINS(job_extensions, 'No degree mentioned') ASC,
+    ARRAY_CONTAINS(job_extensions, 'Paid time off') ASC
 LIMIT 10;
 ```
 
 ![Job Extensions Before and After](Assets/job_extensions_before_after.png)
 
-*Figure: Before-and-after validation showing how semi-structured JSON arrays are converted into analytical boolean columns.*
+*Figure: Validation of JSON array parsing, showing how selected benefits are converted into true/false indicators based on keyword presence.*
 
 **Result — Structured Boolean Columns**
 
