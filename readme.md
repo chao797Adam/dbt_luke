@@ -120,10 +120,50 @@ One-line call:
 {{ unpack_extensions('job_extensions', ['Health insurance', 'Dental insurance', 'Paid time off', 'No degree mentioned']) }}
 ```
 
-### 3.5 Deduplication
+### 3.5 Deduplication — Raw Duplicate Detection & Grain Enforcement
+
+Before implementing deduplication, I profiled the raw `job_postings` table to identify missing and duplicate business keys.
+
 ```sql
-row_number() over (partition by job_id order by search_date desc) as row_num
+SELECT
+    job_id,
+    COUNT(*) AS duplicate_count
+FROM dbt_luke.raw.job_postings
+GROUP BY job_id
+HAVING COUNT(*) > 1
+ORDER BY duplicate_count DESC;
 ```
+
+![Raw Job Posting Duplicate Detection](assets/raw_job_postings_duplicates.png)
+
+*Figure: Raw data profiling shows 157,402 records with NULL `job_id`, while several non-null job IDs appear multiple times (up to 22 times among the displayed results).*
+
+This highlights two data quality concerns:
+
+- **Missing business keys:** Records without `job_id` cannot be reliably identified as individual job postings.
+- **Duplicate business keys:** The same job posting may appear in multiple searches or scraping runs.
+
+To address these issues, the Staging model first filters invalid records:
+
+```sql
+WHERE error IS NOT TRUE
+  AND job_id IS NOT NULL
+```
+
+It then applies window-based deduplication:
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY job_id
+    ORDER BY search_date DESC
+) AS row_num
+```
+
+Only records with `row_num = 1` are retained, enforcing the intended Staging grain of **one row per `job_id`**.
+
+This is particularly important because the downstream dbt Snapshot uses `job_id` as its `unique_key`. Each Snapshot execution requires at most one current input record per business key to reliably detect changes and maintain SCD2 history.
+
+**Engineering takeaway:** Raw data can contain missing and repeated business keys. By validating identifiers and deduplicating before downstream modeling, the Staging layer establishes a consistent grain and reduces the risk of duplicate records propagating into analytical models.
 
 ### 3.6 Reconciliation: Data Funnel
 ```sql
