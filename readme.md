@@ -1080,7 +1080,7 @@ Both approaches track changes observed during snapshot executions. The `as_of` p
 
 In addition to parameterized snapshot input selection, Luke's implementation includes a separate SQL backfill script:
 
-**Source:** `project_2/scripts/backfill_job_postings_snapshot.sql`
+**Reference:** Luke Barousse's Analytics Engineering Course — `project_2/scripts/backfill_job_postings_snapshot.sql` (original tutorial repository).
 
 The script reconstructs historical SCD2 versions from previously collected job posting observations, rather than waiting for scheduled `dbt snapshot` executions to accumulate history.
 
