@@ -50,13 +50,13 @@ models:
 
   # 4. Bridge Table - Job to Skill
   - name: bridge_job_skills
-    description: "Bridge table mapping jobs to skills."
+    description: "Bridge table mapping jobs to skills, retaining keyword variations."
     data_tests:
-      - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - job_id
-            - skill_id # test duplicate job_id-skill_id pairs
-            - skill_keyword # test three columns combination for uniqueness, otherwise fail
+    - dbt_utils.unique_combination_of_columns:
+        combination_of_columns:
+          - job_id
+          - skill_id
+          - skill_keyword  # Unique grain: (job_id, skill_id, skill_keyword)
     columns:
       - name: job_id
         data_tests:
