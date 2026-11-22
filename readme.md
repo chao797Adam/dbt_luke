@@ -405,6 +405,25 @@ ROW_NUMBER() OVER (
 
 Only records with `row_num = 1` are retained, enforcing the intended Staging grain of **one row per `job_id`**.
 
+**Validation — Staging Grain Verification**
+
+After applying deduplication, I validated the Staging table to confirm that no duplicate `job_id` values remained.
+
+```sql
+SELECT
+    job_id,
+    COUNT(*) AS duplicate_count
+FROM dbt_luke.bronze.stg_job_postings
+GROUP BY job_id
+HAVING COUNT(*) > 1;
+```
+
+![Staging Deduplication Validation](Assets/staging_deduplication_validation.png)
+
+*Figure: The query returns zero rows, confirming that no duplicate `job_id` values remain in the Staging table.*
+
+**Result:** The Staging layer successfully enforces the intended grain of one row per `job_id`, providing a unique input for downstream Fact modeling and SCD2 snapshots.
+
 This is particularly important because the downstream dbt Snapshot uses `job_id` as its `unique_key`. Each Snapshot execution requires at most one current input record per business key to reliably detect changes and maintain SCD2 history.
 
 **Engineering takeaway:** Raw data can contain missing and repeated business keys. By validating identifiers and deduplicating before downstream modeling, the Staging layer establishes a consistent grain and reduces the risk of duplicate records propagating into analytical models.
