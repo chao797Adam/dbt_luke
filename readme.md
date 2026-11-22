@@ -658,6 +658,14 @@ models/
 
 ### 6.5 Bridge Table Many-to-Many & Grain Traps
 
+**Bridge Table Purpose**
+
+The `bridge_job_skills` model connects job postings in `fct_job_postings` with skills in `dim_skill`, resolving their many-to-many relationship.
+
+An `INNER JOIN` with `fct_job_postings` retains only job-skill associations belonging to valid Fact records.
+
+The bridge preserves `skill_keyword` variations, resulting in a grain of `(job_id, skill_id, skill_keyword)`. Because multiple keywords may map to the same job-skill pair, downstream demand calculations should use `COUNT(DISTINCT job_id)` to avoid double-counting job postings.
+
 When building the `bridge_job_skills` (bridging the Fact and Skill Dimension), we encountered a classic Many-to-Many grain conflict:
 - **Business Reality**: For the same `job_id` and `skill_id`, text extraction may yield multiple different `skill_keyword`s (e.g., `pub/sub`, `google pub`, `pubsub`). This means the composite of all three columns is unique, but `job_id + skill_id` alone is not.
 - **Testing Trap**: Testing uniqueness solely on `(job_id, skill_id)` results in massive test failures (100k+ duplicates), which can mislead developers into blindly deduplicating and losing valuable keyword context.
