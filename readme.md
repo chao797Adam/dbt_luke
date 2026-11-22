@@ -1065,11 +1065,33 @@ My staging model excludes NULL `job_id` values and deduplicates records by `job_
 
 My implementation produces slightly lower skill demand counts than the reference tutorial, while the overall demand percentages remain closely aligned.
 
-Both implementations use `COUNT(DISTINCT job_id)` to prevent duplicate job counts within each skill. Since this aggregation automatically excludes NULL job IDs, filtering NULL IDs alone does not explain the differences.
+The raw data audit identified 157,402 records with NULL `job_id` values and 194,555 excess rows associated with duplicate non-NULL job IDs. My staging model removes NULL IDs and deduplicates records to maintain one row per job posting.
 
-Differences in upstream filtering, deduplication, or source data may contribute to the discrepancies. However, the exact cause has not been confirmed.
+**Reverse Relationship Audit — Fact vs. Bridge**
 
-**Key Takeaway:** Data reconciliation helps validate analytical consistency, identify data quality issues, and ensure that metrics respect the intended business grain.
+The reference tutorial demonstrates why the direction of a dbt Relationships Test matters.
+
+A standard relationship test verifies that every `job_id` in `bridge_job_skills` exists in `fct_job_postings`. The reverse test checks whether every job posting has a corresponding record in the Bridge table.
+
+**Reference Tutorial — Relationship Test Direction**
+
+![Reference Relationship Test Direction](Assets/reference_relationship_direction.png)
+
+*Source: Luke Barousse's dbt course, 06:31:56.*
+
+The reference tutorial identified **65,039 job postings without associated skills (approximately 13.2%)**. Although the reverse relationship test failed, these unmatched records are valid because not every job posting lists skills.
+
+**My Implementation — Fact-to-Bridge Audit**
+
+![My Fact-to-Bridge Relationship Audit](Assets/fact_bridge_relationship_audit.png)
+
+My Databricks query independently identified exactly **65,039 job postings without associated skills (13.24%)** out of 491,140 job postings, matching the reference tutorial's count.
+
+This confirms consistency in the number of job postings without skill associations, while minor differences remain in individual skill demand counts.
+
+Both implementations use `COUNT(DISTINCT job_id)` for skill demand aggregation. Therefore, NULL job IDs alone do not explain the discrepancies. Differences in upstream filtering, deduplication, or skill mapping may contribute, but the exact cause remains unconfirmed.
+
+**Key Takeaway:** Data reconciliation validates numerical consistency, data quality, business grain, and relationship integrity. Relationship tests must also follow the intended business cardinality, as unmatched records in a reverse test do not necessarily indicate data quality errors.
 
 **Whole Market — Skill Demand Comparison**
 
