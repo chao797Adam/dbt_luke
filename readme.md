@@ -165,6 +165,22 @@ This is particularly important because the downstream dbt Snapshot uses `job_id`
 
 **Engineering takeaway:** Raw data can contain missing and repeated business keys. By validating identifiers and deduplicating before downstream modeling, the Staging layer establishes a consistent grain and reduces the risk of duplicate records propagating into analytical models.
 
+#### Design Comparison — Reference Tutorial vs. My Implementation
+
+The reference tutorial separates historical scrape observations from the current state of each job posting:
+
+- `stg_job_postings` retains repeated scrape observations after filtering invalid records.
+- `stg_job_postings_current` is an ephemeral model that uses an `as_of` date filter and `ROW_NUMBER() = 1` to select the latest observation per `job_id`.
+- The SCD2 Snapshot reads from `stg_job_postings_current`, using `job_id` as its unique key.
+
+In my implementation, the Raw layer already preserves the original source records. Therefore, I chose to apply deduplication directly in `stg_job_postings`, rather than introducing an additional current-state model.
+
+This ensures that the Staging layer has a consistent grain of **one row per `job_id`**, providing a unique input for downstream SCD2 snapshots and simplifying subsequent transformations.
+
+**Trade-off:** The reference design supports selecting historical current states using an `as_of` cutoff, while my design prioritizes a simpler current-state pipeline. Historical raw observations remain available for reprocessing, but intermediate changes between Snapshot executions are not automatically captured.
+
+Both approaches are valid for their respective objectives; the main difference is where current-state selection and deduplication occur.
+
 ### 3.6 Reconciliation: Data Funnel
 ```sql
 SELECT 

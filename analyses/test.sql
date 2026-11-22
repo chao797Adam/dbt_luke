@@ -30,5 +30,3 @@ from filtered_bridge f
 inner join skills s on f.skill_id = s.skill_id
 group by 1, 2
 order by demand_count desc
-limit 10
-;
