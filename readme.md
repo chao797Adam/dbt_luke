@@ -696,7 +696,19 @@ We used `dbt_utils.unique_combination_of_columns` in `_marts_models.yml` to lock
           - relationships:
               to: ref('dim_skill')
               field: skill_id
-```              
+```
+
+**Engineering Reflection — Why Join the Fact Table Instead of Using Staging Directly?**
+
+Initially, I assumed `bridge_job_skills` could simply reuse `stg_job_skills`, since both tables share the same columns and grain.
+
+However, the `INNER JOIN` with `fct_job_postings` serves an important purpose: it ensures that every job-skill association in the Gold Bridge references a job that actually exists in the Gold Fact table.
+
+In the current dataset, the join produces the same rows as `stg_job_skills` because the Staging relationships tests pass and the Fact contains the same set of job IDs.
+
+Nevertheless, this design provides protection against future differences caused by incremental processing, additional Fact filtering, or synchronization delays.
+
+**Key takeaway:** Staging validates source-level relationships, while the Gold Bridge aligns job-skill associations with the Fact table's actual job population.
 
 ### 6.6 Anti-Pattern: The `dim_company` Lineage Trap & Redundant Test
 
