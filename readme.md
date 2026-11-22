@@ -66,7 +66,7 @@ for t in tables:
 *(Corresponds to video at 04:38:00)*
 ```sql
 SELECT search_term, COUNT(*) AS total
-FROM dbt_luke.source.job_postings
+FROM dbt_luke.raw.job_postings
 WHERE error IS NOT TRUE
 GROUP BY 1 ORDER BY total DESC;
 ```
@@ -75,7 +75,7 @@ GROUP BY 1 ORDER BY total DESC;
 ### 2.2 Boolean Field Profiling (Crucial Discovery)
 ```sql
 SELECT DISTINCT job_work_from_home 
-FROM dbt_luke.source.job_postings 
+FROM dbt_luke.raw.job_postings 
 WHERE error IS NOT TRUE;
 ```
 **Result**: Natively **Boolean**, only `true` and `null` (no `false`).
