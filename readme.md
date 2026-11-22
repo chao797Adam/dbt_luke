@@ -1076,6 +1076,68 @@ The reference tutorial provides additional flexibility through parameterized poi
 
 Both approaches track changes observed during snapshot executions. The `as_of` parameter controls source record selection; it does not automatically reconstruct historical SCD2 validity timestamps.
 
+#### Historical Snapshot Backfill — Reference Tutorial
+
+In addition to parameterized snapshot input selection, Luke's implementation includes a separate SQL backfill script:
+
+**Source:** `project_2/scripts/backfill_job_postings_snapshot.sql`
+
+The script reconstructs historical SCD2 versions from previously collected job posting observations, rather than waiting for scheduled `dbt snapshot` executions to accumulate history.
+
+**Backfill Logic**
+
+```sql
+-- 1. Keep one observation per job per scrape day
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY job_id, search_date
+    ORDER BY searched_at DESC
+) = 1
+```
+
+```sql
+-- 2. Detect changes in monitored attributes
+LAG(_sig) OVER (
+    PARTITION BY job_id
+    ORDER BY searched_at
+) AS _prev_sig
+```
+
+The `_sig` value is an MD5 fingerprint calculated from the 13 monitored job attributes. Only records with a changed fingerprint, or the first observation for a job, are retained.
+
+```sql
+-- 3. Construct historical SCD2 validity periods
+MD5(CONCAT(job_id, '|', CAST(searched_at AS STRING)))
+    AS dbt_scd_id,
+
+searched_at AS dbt_updated_at,
+searched_at AS dbt_valid_from,
+
+LEAD(searched_at) OVER (
+    PARTITION BY job_id
+    ORDER BY searched_at
+) AS dbt_valid_to
+```
+
+**Engineering Comparison**
+
+| Aspect | Reference Tutorial | My Implementation |
+|---|---|---|
+| Historical input | Full scrape observations | Latest deduplicated Staging state |
+| Historical cutoff | Configurable `as_of` | Not implemented |
+| Historical backfill | SQL-based SCD2 reconstruction | Not implemented |
+| Ongoing change tracking | `dbt snapshot` | `dbt snapshot` |
+| Historical coverage | Observed historical changes plus future snapshots | Changes detected from snapshot execution onward |
+
+**Engineering Takeaway**
+
+The reference tutorial combines historical snapshot backfilling with ongoing dbt Snapshot execution. Its backfill script reconstructs historical versions using change detection and SQL window functions, then allows dbt Snapshot to continue tracking subsequent changes.
+
+My implementation focuses on ongoing SCD2 change tracking using the latest deduplicated Staging state. This simpler design was validated through the Fraser Health attribute-change test in Section 6.9.
+
+Historical backfilling is an additional capability rather than a requirement for implementing SCD2 snapshots.
+
+**Limitation:** Backfilling can reconstruct only changes represented in the retained source observations. It cannot recover changes that were never captured. Directly replacing a dbt-managed snapshot table also requires careful compatibility validation.
+
 ---
 
 ## 7. Data Quality Audit: Reconciliation & Engineering Trade-offs
