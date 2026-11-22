@@ -472,9 +472,21 @@ SELECT 'skill_categories', COUNT(*) FROM dbt_luke.bronze.skill_categories;
 
 ---
 
-## 4. Staging Data Quality Testing (Production-Grade)
+## 4. Staging Data Quality Testing
 
-9 generic tests implemented in `_staging_models.yml`:
+**Problem — Data Integrity and Referential Consistency**
+
+After cleaning and deduplicating the Staging models, data quality tests were required to validate the intended grain and relationships between datasets.
+
+The key requirements were:
+
+- **Uniqueness:** Each `job_id` in `stg_job_postings` and each `skill_id` in `skill_categories` must be unique.
+- **Completeness:** Required identifiers and skill descriptions must not contain `NULL` values.
+- **Referential Integrity:** Every `job_id` and `skill_id` in `stg_job_skills` must reference a valid parent record.
+
+**Solution — dbt Generic Data Tests**
+
+Implemented **9 generic data tests** in `_staging_models.yml`:
 
 ```yaml
 version: 2
@@ -486,7 +498,7 @@ models:
         data_tests:
           - unique
           - not_null
-      
+
   - name: stg_job_skills
     columns:
       - name: job_id
@@ -501,7 +513,7 @@ models:
           - relationships:
               to: ref('skill_categories')
               field: skill_id
-        
+
   - name: skill_categories
     columns:
       - name: skill_id
@@ -513,11 +525,36 @@ models:
           - not_null
 ```
 
-**Targeted Execution & Results**:
+**Test Coverage**
+
+| Test Type | Count | Purpose |
+|---|---:|---|
+| `unique` | 2 | Validate unique business keys |
+| `not_null` | 5 | Ensure required fields are populated |
+| `relationships` | 2 | Validate referential integrity |
+| **Total** | **9** | |
+
+**Validation — Targeted Execution**
+
 ```bash
 dbt test --select stg_job_postings stg_job_skills skill_categories --exclude test_type:singular
 ```
-**Verification Result**: `PASS=9 WARN=0 ERROR=0 SKIP=0 TOTAL=9`.
+
+**Execution Result:**
+
+```text
+PASS=9 WARN=0 ERROR=0 SKIP=0 TOTAL=9
+```
+
+All 9 generic tests passed, confirming that the selected Staging models satisfied the configured uniqueness, non-null, and referential integrity checks at execution time.
+
+**Engineering Consideration — Grain Validation**
+
+The `unique` and `not_null` tests on `stg_job_postings.job_id` provide an automated check of the intended Staging grain: **one row per `job_id`**.
+
+The `stg_job_skills` model does not enforce uniqueness on individual `job_id` or `skill_id` columns because multiple skills can be associated with a single job, and a skill can appear across multiple jobs.
+
+The `relationships` tests verify that skill mappings reference existing job postings and skill categories, helping prevent orphaned records in downstream transformations.
 
 ### 4.1 Singular Test: Salary Anomaly Monitoring
 
