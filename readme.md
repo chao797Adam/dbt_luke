@@ -60,6 +60,8 @@ for t in tables:
 
 ---
 
+---
+
 ## 2. Data Profiling & Exploration
 
 ### 2.1 Search Term Distribution
@@ -79,6 +81,8 @@ FROM dbt_luke.raw.job_postings
 WHERE error IS NOT TRUE;
 ```
 **Result**: Natively **Boolean**, only `true` and `null` (no `false`).
+
+---
 
 ---
 
@@ -147,133 +151,9 @@ SELECT 'skill_categories', COUNT(*) FROM dbt_luke.bronze.skill_categories;
 
 ---
 
-## 4. Data Modeling & Marts Layer (Gold)
-
-After rigorous cleaning in the Staging layer, the `marts` layer (Gold) adopts the classic **Kimball Star Schema**.
-
-### 4.1 Directory Structure
-```text
-models/
-├── staging/          # Bronze: Basic cleaning (stg_*)
-├── intermediate/     # Silver: Pre-aggregation to prevent fan-out (int_*)
-└── marts/            # Gold: Star Schema, BI-ready outputs
-    ├── fct_job_postings.sql
-    ├── dim_company.sql
-    ├── dim_skill.sql
-    └── bridge_job_skills.sql
-```
-
-### 4.2 Star Schema Design
-- **Fact Table (`fct_job_postings`)**: Records immutable business events, containing foreign keys to dimensions and metrics like salary/benefits.
-- **Dimension Tables (`dim_company`, `dim_skill`)**: Store descriptive attributes.
-- **Bridge Table (`bridge_job_skills`)**: Resolves the **Many-to-Many** relationship between jobs and skills.
-
-### 4.3 Architecture Review: Why SCD2 on a Fact Table is Wrong
-- **Insight**: Fact tables record immutable events. Applying SCD2 here leads to infinite storage growth and logical confusion.
-- **Correct Design**: Keep facts as incremental `MERGE` tables. For history, rely on Delta Lake Time Travel.
-
-### 4.4 Architecture Limitation: The `dim_company` Lineage Trap
-- **The Limitation**: `dim_company` is derived from `fct_job_postings`. Because they share the same lineage root, an orphaned key is structurally impossible, making the `relationships` test redundant.
-- **Best Practice**: In a real enterprise scenario, `dim_company` should be sourced from an independent MDM system.
-
-### 4.5 Bridge Table Many-to-Many & Grain Traps
-
-When building the `bridge_job_skills` (bridging the Fact and Skill Dimension), we encountered a classic Many-to-Many grain conflict:
-- **Business Reality**: For the same `job_id` and `skill_id`, text extraction may yield multiple different `skill_keyword`s (e.g., `pub/sub`, `google pub`, `pubsub`). This means the composite of all three columns is unique, but `job_id + skill_id` alone is not.
-- **Testing Trap**: Testing uniqueness solely on `(job_id, skill_id)` results in massive test failures (100k+ duplicates), which can mislead developers into blindly deduplicating and losing valuable keyword context.
-
-**Solution & Test Config**:
-To balance "retaining keyword details" with "bridge consistency," the true Grain of the Bridge table must be declared as `(job_id, skill_id, skill_keyword)`.
-We used `dbt_utils.unique_combination_of_columns` in `_marts_models.yml` to lock this down perfectly:
-
-```yaml
-  - name: bridge_job_skills
-    description: "Bridge table mapping jobs to skills, retaining keyword variations."
-    data_tests:
-      - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - job_id
-            - skill_id
-            - skill_keyword # Test grain must exactly match the table design
-    columns:
-      - name: job_id
-        data_tests:
-          - not_null
-          - relationships:
-              to: ref('fct_job_postings')
-              field: job_id
-      - name: skill_id
-        data_tests:
-          - not_null
-          - relationships:
-              to: ref('dim_skill')
-              field: skill_id
-```              
-
-### 4.6 Anti-Pattern: The `dim_company` Lineage Trap & Redundant Test
-
-In the Marts layer tests, the original tutorial runs a `relationships` test from `fct_job_postings.company_name` to `dim_company.company_name`, which successfully passes.
-**However, this test is architecturally meaningless (redundant).**
-
-**Root Cause**:
-The SQL for `dim_company` is simply extracting `distinct company_name` directly from `fct_job_postings`. They share the exact same lineage. Since the dimension is derived from the fact, an orphaned key is structurally impossible unless transformation logic drops rows. Running this test is like "proving your father is your father."
-
-**Best Practice**:
-In a real production environment, `dim_company` should be sourced from an independent Master Data Management (MDM) system or CRM table. Only when the dimension has an independent source can the `relationships` test truly validate referential integrity and prevent the fact table from referencing companies that don't exist in the master data.
-
-### 4.7 Historical Tracking: SCD Type 2 Snapshot Design
-
-While SCD2 is not recommended directly on Fact tables, we need to track historical changes for specific attributes of job postings. We created an SCD2 snapshot based on the deduplicated `stg_job_postings` and stored it in a separate `snapshots` schema:
-
-```sql
-{% snapshot scd_job_postings %}
-    {{ config(
-      target_schema='snapshots',        
-      unique_key='job_id',
-      strategy='check',
-      check_cols=[
-        'search_term', 'search_date', 'search_location', 'job_title', 
-        'company_name', 'job_location', 'source_platform', 'job_schedule_type', 
-        'job_work_from_home', 'job_posted_at', 'job_salary', 'salary_min', 
-        'salary_max', 'salary_avg', 'salary_period', 'salary_currency', 
-        'has_health_insurance', 'has_dental_insurance', 'has_paid_time_off', 'has_no_degree_mentioned'
-      ]
-    )}}
-    select * from {{ ref('stg_job_postings') }}
-{% endsnapshot %}
-```
-
-*Note: Under the `check` strategy, dbt ignores `updated_at` and directly compares `check_cols`. It must be based on the `stg` layer (deduplicated with `rn=1`), otherwise it triggers a `Multiple source rows matched` error.*
-
-### 4.8 Practical Verification: How to Prove SCD2 Works
-
-To verify that the snapshot truly captures historical changes, we performed a "data tampering" drill:
-
-1. **Initial State**: The `Senior Data Engineer` role at `Fraser Health` has `job_work_from_home = null`. Run `dbt snapshot` to record version 1.
-2. **Simulate Source Data Change**:
-   ```sql
-   UPDATE dbt_luke.raw.job_postings
-   SET job_work_from_home = true
-   WHERE job_title = 'Senior Data Engineer' AND company_name = 'Fraser Health';
-   ```
-3. **Run Pipeline**: Execute `dbt run --select stg_job_postings` and `dbt snapshot`.
-4. **Verify Results**: Query the snapshot table, and two rows appear:
-   - Old record: `job_work_from_home = null`, `dbt_valid_to` marked as current time (expired).
-   - New record: `job_work_from_home = true`, `dbt_valid_to = NULL` (currently active).
-
-### 4.9 SCD2 Tracking Boundary: Raw Ledger vs. Snapshot State Machine
-
-Through practice, we reached a deep architectural conclusion: **Why does a Snapshot only capture the history of the "most recent state"?**
-
-1. **Raw Layer (Raw Ledger)**: It may perform daily overwrites (`UPDATE`) or appends (`APPEND`). If it's an `UPDATE`, the old data is physically destroyed, and history is permanently lost.
-2. **Staging Layer (Daily Funnel)**: Using `row_number() = 1`, it masks the complex update mechanisms of the Raw layer, outputting only a **unique "latest slice"** downstream every day.
-3. **Snapshot Layer (Historical Polaroid)**: It doesn't process massive ledgers. It focuses solely on the "latest slice" fed by the Staging layer. If any content changes (based on `check_cols`), it takes a photo, seals the old version, and generates a new version.
-
-**Conclusion**: SCD2 does not track all raw scraping logs; instead, it tracks the **"State Machine" history of substantive changes in business attributes**. Without the Snapshot, the Staging layer outputs the latest state daily, and history vanishes upon overwrite; the Snapshot guards this final timeline defense.
-
 ---
 
-## 5. Data Quality Testing (Production-Grade)
+## 4. Staging Data Quality Testing (Production-Grade)
 
 14 generic tests implemented in `_staging_models.yml`:
 
@@ -320,7 +200,7 @@ dbt test --select stg_job_postings stg_job_skills skill_categories --exclude tes
 ```
 **Verification Result**: `PASS=14 WARN=0 ERROR=0 SKIP=0 TOTAL=14`.
 
-### 5.1 Singular Test: Salary Anomaly Monitoring
+### 4.1 Singular Test: Salary Anomaly Monitoring
 
 During data profiling, we identified extreme salary values (e.g., annual salaries over $1,000,000). Throwing a hard `ERROR` for these in the pipeline would break the entire build; however, ignoring them would severely skew the average salary calculations in BI dashboards.
 
@@ -352,10 +232,12 @@ WHERE salary_period = 'year'
 
 ---
 
-## 6. Intermediate Layer: Preventing Fan-out
+---
+
+## 5. Intermediate Layer: Preventing Fan-out
 - **Solution**: Use `GROUP BY` in the Intermediate layer to pre-aggregate data before joining dimensions, massively reducing row count and improving performance.
 
-### 6.1 Profiling Query: Deduplication Audit (Checking for Fan-out)
+### 5.1 Profiling Query: Deduplication Audit (Checking for Fan-out)
 
 Before moving into the Intermediate layer to build aggregated tables, we must verify that the `stg_job_skills` bridge table does not contain duplicate records for the same `job_id` under the same `skill_id` (which would indicate a Fan-out issue).
 
@@ -378,7 +260,7 @@ order by dup_rows desc, total_job_per_skill desc;
 
 **Result & Conclusion**: If `dup_rows` is 0 across the board, it proves that the `(job_id, skill_id)` composite key is unique and no underlying Fan-out has occurred. This provides a guarantee of data quality for the next step: direct `GROUP BY` aggregation in the Intermediate layer.
 
-### 6.2 Intermediate Layer Design: `int_skill_demand` & Fan-out Prevention
+### 5.2 Intermediate Layer Design: `int_skill_demand` & Fan-out Prevention
 
 To avoid exponential data explosion (Fan-out) caused by Many-to-Many `JOIN`s directly on the Fact table (`fct_job_postings`), we built the `int_skill_demand` model in the Intermediate layer.
 
@@ -387,15 +269,149 @@ To avoid exponential data explosion (Fan-out) caused by Many-to-Many `JOIN`s dir
 2. **Eliminating Fan-out**: Because of this pre-aggregation, when this lightweight `int_skill_demand` table is finally joined with the Fact table (or Dimension tables), **there is only one row per skill**, completely preventing the data inflation issue where "a job with 5 skills becomes 5 rows after a Join".
 3. **Performance Boost**: By pushing heavy aggregation operations down to the Intermediate layer, the final BI-ready Marts layer only needs to process lightweight aggregated results, significantly improving query performance.
 
+---
+
+## 6. Data Modeling & Marts Layer (Gold)
+
+After rigorous cleaning in the Staging layer, the `marts` layer (Gold) adopts the classic **Kimball Star Schema**.
+
+### 6.1 Directory Structure
+```text
+models/
+├── staging/          # Bronze: Basic cleaning (stg_*)
+├── intermediate/     # Silver: Pre-aggregation to prevent fan-out (int_*)
+└── marts/            # Gold: Star Schema, BI-ready outputs
+    ├── fct_job_postings.sql
+    ├── dim_company.sql
+    ├── dim_skill.sql
+    └── bridge_job_skills.sql
+```
+
+### 6.2 Star Schema Design
+- **Fact Table (`fct_job_postings`)**: Records immutable business events, containing foreign keys to dimensions and metrics like salary/benefits.
+- **Dimension Tables (`dim_company`, `dim_skill`)**: Store descriptive attributes.
+- **Bridge Table (`bridge_job_skills`)**: Resolves the **Many-to-Many** relationship between jobs and skills.
+
+### 6.3 Architecture Review: Why SCD2 on a Fact Table is Wrong
+- **Insight**: Fact tables record immutable events. Applying SCD2 here leads to infinite storage growth and logical confusion.
+- **Correct Design**: Keep facts as incremental `MERGE` tables. For history, rely on Delta Lake Time Travel.
+
+### 6.4 Architecture Limitation: The `dim_company` Lineage Trap
+- **The Limitation**: `dim_company` is derived from `fct_job_postings`. Because they share the same lineage root, an orphaned key is structurally impossible, making the `relationships` test redundant.
+- **Best Practice**: In a real enterprise scenario, `dim_company` should be sourced from an independent MDM system.
+
+### 6.5 Bridge Table Many-to-Many & Grain Traps
+
+When building the `bridge_job_skills` (bridging the Fact and Skill Dimension), we encountered a classic Many-to-Many grain conflict:
+- **Business Reality**: For the same `job_id` and `skill_id`, text extraction may yield multiple different `skill_keyword`s (e.g., `pub/sub`, `google pub`, `pubsub`). This means the composite of all three columns is unique, but `job_id + skill_id` alone is not.
+- **Testing Trap**: Testing uniqueness solely on `(job_id, skill_id)` results in massive test failures (100k+ duplicates), which can mislead developers into blindly deduplicating and losing valuable keyword context.
+
+**Solution & Test Config**:
+To balance "retaining keyword details" with "bridge consistency," the true Grain of the Bridge table must be declared as `(job_id, skill_id, skill_keyword)`.
+We used `dbt_utils.unique_combination_of_columns` in `_marts_models.yml` to lock this down perfectly:
+
+```yaml
+  - name: bridge_job_skills
+    description: "Bridge table mapping jobs to skills, retaining keyword variations."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - job_id
+            - skill_id
+            - skill_keyword # Test grain must exactly match the table design
+    columns:
+      - name: job_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('fct_job_postings')
+              field: job_id
+      - name: skill_id
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_skill')
+              field: skill_id
+```              
+
+### 6.6 Anti-Pattern: The `dim_company` Lineage Trap & Redundant Test
+
+In the Marts layer tests, the original tutorial runs a `relationships` test from `fct_job_postings.company_name` to `dim_company.company_name`, which successfully passes.
+**However, this test is architecturally meaningless (redundant).**
+
+**Root Cause**:
+The SQL for `dim_company` is simply extracting `distinct company_name` directly from `fct_job_postings`. They share the exact same lineage. Since the dimension is derived from the fact, an orphaned key is structurally impossible unless transformation logic drops rows. Running this test is like "proving your father is your father."
+
+**Best Practice**:
+In a real production environment, `dim_company` should be sourced from an independent Master Data Management (MDM) system or CRM table. Only when the dimension has an independent source can the `relationships` test truly validate referential integrity and prevent the fact table from referencing companies that don't exist in the master data.
+
+### 6.7 Historical Tracking: SCD Type 2 Snapshot Design
+
+While SCD2 is not recommended directly on Fact tables, we need to track historical changes for specific attributes of job postings. We created an SCD2 snapshot based on the deduplicated `stg_job_postings` and stored it in a separate `snapshots` schema:
+
+```sql
+{% snapshot scd_job_postings %}
+    {{ config(
+      target_schema='snapshots',        
+      unique_key='job_id',
+      strategy='check',
+      check_cols=[
+        'search_term', 'search_date', 'search_location', 'job_title', 
+        'company_name', 'job_location', 'source_platform', 'job_schedule_type', 
+        'job_work_from_home', 'job_posted_at', 'job_salary', 'salary_min', 
+        'salary_max', 'salary_avg', 'salary_period', 'salary_currency', 
+        'has_health_insurance', 'has_dental_insurance', 'has_paid_time_off', 'has_no_degree_mentioned'
+      ]
+    )}}
+    select * from {{ ref('stg_job_postings') }}
+{% endsnapshot %}
+```
+
+*Note: Under the `check` strategy, dbt ignores `updated_at` and directly compares `check_cols`. It must be based on the `stg` layer (deduplicated with `rn=1`), otherwise it triggers a `Multiple source rows matched` error.*
+
+### 6.8 Practical Verification: How to Prove SCD2 Works
+
+To verify that the snapshot truly captures historical changes, we performed a "data tampering" drill:
+
+1. **Initial State**: The `Senior Data Engineer` role at `Fraser Health` has `job_work_from_home = null`. Run `dbt snapshot` to record version 1.
+2. **Simulate Source Data Change**:
+   ```sql
+   UPDATE dbt_luke.raw.job_postings
+   SET job_work_from_home = true
+   WHERE job_title = 'Senior Data Engineer' AND company_name = 'Fraser Health';
+   ```
+3. **Run Pipeline**: Execute `dbt run --select stg_job_postings` and `dbt snapshot`.
+4. **Verify Results**: Query the snapshot table, and two rows appear:
+   - Old record: `job_work_from_home = null`, `dbt_valid_to` marked as current time (expired).
+   - New record: `job_work_from_home = true`, `dbt_valid_to = NULL` (currently active).
+
+### 6.9 SCD2 Tracking Boundary: Raw Ledger vs. Snapshot State Machine
+
+Through practice, we reached a deep architectural conclusion: **Why does a Snapshot only capture the history of the "most recent state"?**
+
+1. **Raw Layer (Raw Ledger)**: It may perform daily overwrites (`UPDATE`) or appends (`APPEND`). If it's an `UPDATE`, the old data is physically destroyed, and history is permanently lost.
+2. **Staging Layer (Daily Funnel)**: Using `row_number() = 1`, it masks the complex update mechanisms of the Raw layer, outputting only a **unique "latest slice"** downstream every day.
+3. **Snapshot Layer (Historical Polaroid)**: It doesn't process massive ledgers. It focuses solely on the "latest slice" fed by the Staging layer. If any content changes (based on `check_cols`), it takes a photo, seals the old version, and generates a new version.
+
+**Conclusion**: SCD2 does not track all raw scraping logs; instead, it tracks the **"State Machine" history of substantive changes in business attributes**. Without the Snapshot, the Staging layer outputs the latest state daily, and history vanishes upon overwrite; the Snapshot guards this final timeline defense.
+
+---
+
+---
+
 ## 7. Architecture Review: Why SCD2 Snapshot on a Fact Table is Wrong
 - **The Issue**: The original tutorial used a dbt `snapshot` (SCD Type 2) on the Fact table to track changes.
 - **The Insight**: In Kimball dimensional modeling, **fact tables record immutable events**. They should not have SCD2 applied, as it causes infinite storage growth and logical confusion. SCD2 is strictly for **Dimension tables**. 
 - **The Correct Design**: Kept the Fact table as an incremental `MERGE` table (only keeping the latest state), and relied on Databricks' native Delta Lake Time Travel for history tracking if ever needed.
 
+---
+
 ## 8. Architecture Limitation: The `dim_company` Lineage Trap
 - **The Issue**: In the final data model, `dim_company` is derived directly from `fct_job_postings` (since company info is embedded in the job post). 
 - **The Limitation**: Because `dim_company` shares the exact same lineage/root as the fact table, running a `relationships` test (checking if every fact's `company_id` exists in `dim_company`) is structurally redundant. Since the dimension is derived from the fact, an orphaned key is impossible unless transformation logic drops rows. 
 - **Best Practice**: In a real enterprise scenario, `dim_company` should ideally be sourced from an independent Master Data Management (MDM) system or a dedicated CRM table, not inferred from job postings.
+
+---
 
 ## 9. Data Quality Audit: Deviation from Tutorial & Root Cause Analysis
 
@@ -488,6 +504,8 @@ Prior to that, whether he was using a full rebuild or a blind append, the pressu
 **Our Architectural Foresight**:
 Facing the same 500k rows of data, our project avoided the full-rebuild detour from day one and established a production-grade incremental defense directly. Crucially, by using `incremental_predicates` to lock the physical Merge scope to the last 2 days, we completely avoided the daily full-table scans and comparisons of hundreds of thousands of rows. This proves that our architecture was benchmarked against the highest industry standards for **Idempotency** and **Performance Optimization** from the very beginning.
 
+---
+
 ## 10. Production Scheduling: Lakeflow Job Orchestration & Execution
 
 To achieve automated ELT processes in the Databricks cloud, we created a multi-task **Lakeflow Job** (Workflow) to chain Data Ingestion and dbt Transformations. The Job is structured into two main tasks with a strict dependency:
@@ -527,6 +545,8 @@ dbt test
 
 **Design Consideration**: Splitting `dbt run` into independent modules prevents the entire pipeline from blindly rerunning due to a failure in a single core fact table, significantly improving cloud debugging efficiency.
 
+---
+
 ## 11. Full-Pipeline Volume Audit (Data Lineage Check)
 
 To verify the health and completeness of the data pipeline, we performed a full-table row count audit across all layers (Raw ➔ Bronze ➔ Silver ➔ Gold). The results perfectly demonstrate the data cleaning funnel and the robustness of the deduplication logic:
@@ -550,6 +570,8 @@ To verify the health and completeness of the data pipeline, we performed a full-
 3. **Dimension Convergence (Gold)**: The company dimension collapses to 65,970 unique companies, and the skill dimension represents 1,422 core skills. The intermediate `int_skill_demand` pre-aggregates these into 960 in-demand skills before joining.
 4. **Bridge Expansion**: The `bridge_job_skills` retains the full **3.3 million+** relationship details, ready for BI roll-ups without polluting the Fact table's grain.
 
+---
+
 ## 12. References & Acknowledgements
 
 The architecture inspiration, original dataset, and part of the business logic of this project are referenced from the following open-source project and tutorial. Special thanks:
@@ -558,4 +580,3 @@ The architecture inspiration, original dataset, and part of the business logic o
   [lukebarousse/dbt_Analytics_Engineering_Course/releases](https://github.com/lukebarousse/dbt_Analytics_Engineering_Course/releases)
 - **Tutorial Video**: 
   [YouTube - Analytics Engineering Course](https://www.youtube.com/watch?v=1Bf049kXV2g)
-
