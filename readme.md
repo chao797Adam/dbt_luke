@@ -1028,96 +1028,204 @@ The separation between the incremental Fact and the Snapshot allows current-stat
 
 ---
 
-## 9. Data Quality Audit: Deviation from Tutorial & Root Cause Analysis
+## 9. Data Quality Audit: Reconciliation & Engineering Trade-offs
 
-After completing the Marts layer, we reconciled our results with the original tutorial (at 6h14m). Through cross-validation of specific roles and the whole market, we verified accuracy and identified underlying data issues in the original tutorial.
+After completing the Gold layer, I compared my project results with the reference tutorial to evaluate data consistency, identify potential quality issues, and review incremental processing decisions.
 
-### 9.1 Micro-Level Reconciliation: Data Inflation in Specific Role
+The comparison focuses on three areas:
 
-When filtering for `search_term = 'Data Engineer'`:
+- **Data Reconciliation:** Comparing skill demand metrics across job categories and the overall market.
+- **Primary Key Validation:** Examining uniqueness and completeness test results.
+- **Incremental Architecture:** Evaluating deduplication, MERGE behavior, and late-arriving data handling.
 
-| Skill | Original Tutorial | Our Project | Diff |
-| :--- | :--- | :--- | :--- |
-| **Python** | 191,777 | **189,970** | + 1,807 |
-| **SQL** | 187,451 | **185,900** | + 1,551 |
-| **AWS** | 121,066 | **120,279** | + 787 |
+### 9.1 Data Reconciliation — Tutorial vs. My Implementation
 
-**Root Cause**: The tutorial's inflated numbers stem from `job_id` duplication during incremental merges. 
-**Our Optimization**: We enforced strict deduplication via `row_number() over (partition by job_id) = 1` in the Fact table. This guarantees absolute uniqueness, making our percentages (e.g., Python at 64.20%) highly accurate.
+**Data Engineer — Skill Demand Comparison**
 
-### 9.2 Macro-Level Reconciliation: Whole Market Validation
+The following results compare the number of job postings requiring selected skills when filtering for `search_term = 'Data Engineer'`.
 
-Removing the `WHERE` filter to cross-verify the entire job market (Tutorial console only output Top 5):
+| Skill | Reference Tutorial | My Project | Difference |
+|---|---:|---:|---:|
+| Python | 191,777 | 189,970 | 1,807 |
+| SQL | 187,451 | 185,900 | 1,551 |
+| AWS | 121,066 | 120,279 | 787 |
 
-| Rank | Skill | Original Count | Our Count | Original Pct | Our Pct (2 decimals) |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | **SQL** | 270,017 | **270,017** | 55.0% | **54.98%** |
-| 2 | **Python** | 269,380 | **269,380** | 54.8% | **54.85%** |
-| 3 | **AWS** | 140,433 | **140,433** | 28.6% | **28.59%** |
-| 4 | **Azure** | 134,663 | **134,663** | 27.4% | **27.42%** |
-| 5 | **Spark** | 116,730 | **116,730** | 23.8% | **23.77%** |
+My implementation produces slightly lower demand counts for these skills.
 
-**Deep Dive**: The top 5 absolute demand counts match exactly, proving the macro statistical baseline is correct. The slight percentage variances (e.g., SQL 55.0% vs 54.98%) are due to the tutorial rounding to 1 decimal place and potential minor pollution in the denominator from duplicate merges. Our strict deduplication and 2-decimal rounding ensure absolute precision for macro-level analytics.
+**Whole Market — Skill Demand Comparison**
 
-### 9.3 Deep Validation: Cleaning "Zombie Data" in Data Analyst Roles
+When removing the job category filter, the five leading skills produce identical absolute demand counts.
 
-Beyond the macro market, we cross-verified the highly dynamic `search_term = 'Data Analyst'`. This comparison solidifies the historical data accumulation issue in the original tutorial:
+| Skill | Tutorial Count | My Count | Tutorial % | My % |
+|---|---:|---:|---:|---:|
+| SQL | 270,017 | 270,017 | 55.0% | 54.98% |
+| Python | 269,380 | 269,380 | 54.8% | 54.85% |
+| AWS | 140,433 | 140,433 | 28.6% | 28.59% |
+| Azure | 134,663 | 134,663 | 27.4% | 27.42% |
+| Spark | 116,730 | 116,730 | 23.8% | 23.77% |
 
-| Rank | Skill | Original Count | Our Count | Diff (Redundant) | Original Pct | Our Pct |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | **SQL** | 57,292 | **54,695** | +2,597 | 43.4% | **42.92%** |
-| 2 | **Excel** | 41,473 | **40,544** | +929 | 31.4% | **31.81%** |
-| 3 | **Python** | 38,611 | **36,089** | +2,522 | 29.3% | **28.32%** |
-| 4 | **Power BI** | 36,258 | **35,020** | +1,238 | 27.5% | **27.48%** |
-| 5 | **Tableau** | 28,654 | **27,585** | +1,069 | 21.7% | **21.64%** |
+The matching absolute counts provide a useful consistency check for the overall skill demand calculations.
 
-**Root Cause**:
-Why do the specific DA counts differ by thousands while the macro market matches? The Data Analyst role has extremely high turnover, leading to many expired postings. The original tutorial's incremental model lacked strict boundary cleaning, resulting in **overlapping and duplicated `job_id`s** from past months. 
-Our `fct_job_postings` strictly enforces `row_number() over (partition by job_id) = 1` deduplication and restricts incremental predicates to recent data windows, effectively cleaning out these "zombie jobs." Thus, our 54,695 DA count reflects the **most accurate and cleanest demand** on the market.
+The small percentage differences are consistent with different rounding precision, although denominator differences should also be checked before attributing every discrepancy to rounding.
 
-### 9.4 The Smoking Gun: Primary Key Disaster in the Tutorial's Fact Table
+**Data Analyst — Skill Demand Comparison**
 
-By comparing the `dbt test` execution logs, we found the definitive evidence of all data deviations—the tutorial's `fct_job_postings` table experienced catastrophic failures in both `not_null` and `unique` tests:
+A larger difference appears when filtering for `search_term = 'Data Analyst'`.
 
-- `FAIL 6255 not_null_fct_job_postings_job_id` (**6,255 rows** with null primary keys)
-- `FAIL 63207 unique_fct_job_postings_job_id` (**63,207 rows** with duplicate primary keys)
+| Skill | Tutorial Count | My Count | Difference | Tutorial % | My % |
+|---|---:|---:|---:|---:|---:|
+| SQL | 57,292 | 54,695 | 2,597 | 43.4% | 42.92% |
+| Excel | 41,473 | 40,544 | 929 | 31.4% | 31.81% |
+| Python | 38,611 | 36,089 | 2,522 | 29.3% | 28.32% |
+| Power BI | 36,258 | 35,020 | 1,238 | 27.5% | 27.48% |
+| Tableau | 28,654 | 27,585 | 1,069 | 21.7% | 21.64% |
 
-**🧮 Mathematical Proof**:
-1. **Our Precise Calculation**:
-   - Our Fact table total rows (clean data): **491,140**
-   - SQL absolute demand count: 270,017
-   - Precise percentage: `270,017 / 491,140 ≈ 54.98%`.
-2. **Data Pollution in the Original Tutorial**:
-   - Because the tutorial's Fact table contained **63,207** duplicate records and **6,255** null rows, its underlying data was heavily "inflated." This polluted the denominator during calculations, resulting in the inflated `55.0%` ratio.
-   - Conversely, our project strictly applies `row_number() over (partition by job_id order by search_date desc) = 1` for deduplication in the `fct_job_postings` incremental model. Combined with `unique_key` and incremental predicates, it **completely eliminates data inflation and primary key conflicts**.
+**Engineering Analysis**
 
-**Core Conclusion**:
-While the original tutorial demonstrates the ELT construction process, it has massive vulnerabilities in production-grade data quality. Our project proves that our data pipeline is cleaner, more precise, and more production-ready than the original tutorial through strict primary key deduplication, incremental defenses, and grain-level testing.
+These comparisons show that overall skill demand can match while category-level results differ.
 
-### 9.5 Code-Level Comparison: Incremental Architecture & Defensive Design
+Potential explanations include:
 
-Comparing our Fact table (`fct_job_postings`) incremental model with the original tutorial reveals a massive gap in production-grade robustness:
+- Different deduplication rules or incremental processing states.
+- Differences in the job postings included in each category.
+- Changes in job attributes or search-term classifications.
+- Differences in filtering and aggregation logic.
 
-1. **Incremental Predicates & Late-arriving Data**:
-   - **Tutorial**: Uses a rigid `WHERE search_date > (SELECT MAX(search_date) ...)`. This is fragile, misses late-arriving data, and fails during multiple daily runs.
-   - **Our Project**: Double defense. We use `incremental_predicates` in the `config` to physically limit the Merge partition range (only updating the last 2 days), combined with a logical filter `WHERE search_date >= date_sub(..., 2)` in the data flow. This captures late data while preventing full-table scans, massively boosting performance.
+The comparisons alone do not establish which factor caused each discrepancy.
 
-2. **Strict Schema Contract**:
-   - **Tutorial**: Uses `SELECT *`. Adding upstream columns can trigger Delta Lake Schema errors or data pollution.
-   - **Our Project**: Explicitly declares all 22 business fields. This builds a solid data contract, keeping the Fact table structure stable regardless of upstream changes.
+**Engineering Takeaway**
 
-3. **Rigor in Deduplication**:
-   - **Tutorial**: Relies solely on `ORDER BY searched_at DESC`.
-   - **Our Project**: Uses `ORDER BY search_date desc, searched_at desc`, paired with strict `not_null` and `unique` tests, completely eliminating the tens of thousands of duplicate rows and null primary keys seen in the tutorial.
+Data reconciliation should validate both overall metrics and detailed business segments.
 
-### 9.6 Last-Minute Merge Implementation & Architecture Reflection
+Matching aggregate totals does not guarantee that every category-level result is identical.
 
-In the 8.5-hour tutorial, the original author only added the `incremental_strategy='merge'` configuration to the `fct_job_postings` Fact table in the final 30 minutes.
+### 9.2 Data Quality Findings — Primary Key Validation
 
-Prior to that, whether he was using a full rebuild or a blind append, the pressure of full-table scans and data inflation as daily scraped data accumulated was fatal. Introducing `is_incremental()` and Merge in the last 30 minutes was a last-minute patch for this architectural flaw.
+A key difference between the implementations appears in the Fact table's dbt test results.
 
-**Our Architectural Foresight**:
-Facing the same 500k rows of data, our project avoided the full-rebuild detour from day one and established a production-grade incremental defense directly. Crucially, by using `incremental_predicates` to lock the physical Merge scope to the last 2 days, we completely avoided the daily full-table scans and comparisons of hundreds of thousands of rows. This proves that our architecture was benchmarked against the highest industry standards for **Idempotency** and **Performance Optimization** from the very beginning.
+**Reference Tutorial — Reported Test Failures**
+
+The tutorial execution logs showed:
+
+```text
+FAIL 6255 not_null_fct_job_postings_job_id
+FAIL 63207 unique_fct_job_postings_job_id
+```
+
+These results indicate that the tutorial's Fact table violated its configured primary-key completeness and uniqueness requirements at the time of testing.
+
+The failure counts are dbt test failure counts and should not automatically be interpreted as the number of distinct affected job IDs.
+
+**My Implementation — Validation Results**
+
+My Fact model applies source-level filtering and deduplication before loading data into the Gold layer.
+
+```sql
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY job_id
+    ORDER BY search_date DESC, searched_at DESC
+) = 1
+```
+
+The current Fact table contains **491,140 rows**, and both the `unique` and `not_null` tests on `job_id` passed.
+
+The complete Gold layer also passed all 14 configured tests:
+
+```text
+PASS=14 WARN=0 ERROR=0 SKIP=0 TOTAL=14
+```
+
+**Why This Matters**
+
+A reliable Fact table must maintain its declared grain.
+
+For `fct_job_postings`, the intended grain is one row per `job_id`.
+
+Duplicate or missing job IDs can affect job counts, skill demand percentages, and downstream analytical relationships.
+
+However, a passing test confirms the table's state at execution time. It does not guarantee that future incremental runs cannot introduce duplicates.
+
+**Engineering Takeaway**
+
+Automated uniqueness, completeness, and relationship tests provide measurable evidence of data quality.
+
+The comparison demonstrates the importance of validating business keys rather than relying only on successful model execution.
+
+### 9.3 Incremental Architecture — Design Decisions & Limitations
+
+The `fct_job_postings` model uses incremental materialization with the `merge` strategy.
+
+The objective is to process new or recently updated records without rebuilding the entire Fact table on every execution.
+
+**1. Source Deduplication**
+
+Incoming records are deduplicated using `ROW_NUMBER()` and the business key `job_id`.
+
+This prevents multiple source rows for the same job from being passed into a single MERGE operation.
+
+**2. Incremental Source Filtering**
+
+The model uses a lookback window based on the maximum `search_date` already present in the target table.
+
+```sql
+WHERE search_date >= (
+    SELECT date_sub(MAX(search_date), 2)
+    FROM {{ this }}
+)
+```
+
+This approach allows records within the lookback period to be reconsidered during incremental execution.
+
+**Trade-off:** Records arriving outside the lookback window may be missed unless a wider backfill or full refresh is performed.
+
+**3. MERGE Matching and Destination Predicates**
+
+The implementation also uses a destination-side incremental predicate:
+
+```sql
+incremental_predicates = [
+    "DBT_INTERNAL_DEST.search_date >= date_sub(current_date(), 2)"
+]
+```
+
+This predicate limits which existing target rows are eligible for matching during the MERGE operation.
+
+However, the source filter and destination predicate use different reference dates:
+
+- Source window: Based on `MAX(search_date)` in the target.
+- Destination window: Based on `current_date()`.
+
+These windows are not guaranteed to align.
+
+An existing `job_id` may be included in the source batch but excluded from the destination matching window. In that situation, MERGE may treat the record as unmatched and insert another row with the same business key.
+
+**Engineering Limitation**
+
+The destination-side predicate is therefore a potential correctness risk and should not be described as a guaranteed protection against duplicates.
+
+For this project, a safer baseline is to remove the destination-side `incremental_predicates` configuration while retaining source deduplication, the `unique_key`, and incremental MERGE.
+
+Any performance optimization should be evaluated after verifying that it preserves correct matching behavior.
+
+**4. Explicit Column Selection**
+
+The Fact model explicitly selects its required business columns rather than relying on `SELECT *`.
+
+This makes the intended output schema easier to review and reduces the risk of unintentionally propagating new upstream columns.
+
+However, explicit column selection is not equivalent to an enforced dbt model contract.
+
+**5. Validation and Future Improvements**
+
+The current implementation has successfully passed its configured Gold-layer tests.
+
+Further validation should include repeated incremental executions, updates to existing job IDs, late-arriving records, and row-count reconciliation.
+
+**Engineering Takeaway**
+
+Incremental processing involves a trade-off between efficiency and correctness.
+
+Source deduplication, MERGE key matching, and data quality tests must work together. Performance optimizations should not compromise business-key uniqueness or cause valid updates to be missed.
 
 ---
 
