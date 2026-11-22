@@ -134,7 +134,7 @@ HAVING COUNT(*) > 1
 ORDER BY duplicate_count DESC;
 ```
 
-![Raw Job Posting Duplicate Detection](assets/raw_job_postings_duplicates.png)
+![Raw Job Posting Duplicate Detection](Assets/raw_job_postings_duplicates.png)
 
 *Figure: Raw data profiling shows 157,402 records with NULL `job_id`, while several non-null job IDs appear multiple times (up to 22 times among the displayed results).*
 
