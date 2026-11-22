@@ -127,8 +127,31 @@ The Staging model evolved from a simple filtering and deduplication query into a
 The following sections explain these transformations in detail, particularly the salary parsing logic in Section 3.3 and JSON array processing in Section 3.4.
 
 ### 3.1 Text Prefix Cleaning
-- **Profiling**: `WHERE job_via LIKE 'via %'`.
-- **Cleaning**: `REGEXP_REPLACE(job_via, '^via ', '')`.
+
+**Problem:** Raw data inspection revealed that the `job_via` column contains a redundant `via ` prefix in source platform names, such as `via LinkedIn` and `via ZipRecruiter`.
+
+**Data Profiling:**
+
+```sql
+SELECT DISTINCT job_via
+FROM dbt_luke.raw.job_postings
+WHERE job_via LIKE 'via %'
+LIMIT 30;
+```
+
+![Job Via Prefix Profiling](Assets/job_via_prefix_profiling.png)
+
+*Figure: Raw data profiling confirms the presence of redundant `via ` prefixes.*
+
+**Solution:**
+
+```sql
+REGEXP_REPLACE(job_via, '^via ', '') AS source_platform
+```
+
+**Result:** Standardized source platform names by removing the leading `via ` prefix.
+
+For example, `via LinkedIn` becomes `LinkedIn`, making the values cleaner for downstream reporting and grouping.
 
 ### 3.2 Defensive Boolean Casting
 ```sql
