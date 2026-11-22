@@ -1012,6 +1012,70 @@ SCD2 Snapshots provide historical state tracking, but their completeness depends
 
 The separation between the incremental Fact and the Snapshot allows current-state analytics and historical change tracking to serve different purposes without combining both responsibilities in one model.
 
+### 6.11 Snapshot Input Design — Reference Tutorial vs. My Implementation
+
+### Snapshot Design — Reference Tutorial vs. My Implementation
+
+Both implementations use dbt Snapshots with the `check` strategy to preserve SCD Type 2 history. The main difference is how the snapshot input is prepared.
+
+**Reference Tutorial — Parameterized Snapshot Input**
+
+The reference tutorial introduces an additional ephemeral model, `stg_job_postings_current`, to select the latest job posting observation before a configurable cutoff date.
+
+```sql
+-- stg_job_postings_current.sql
+{{ config(materialized='ephemeral') }}
+
+SELECT *
+FROM {{ ref('stg_job_postings') }}
+WHERE search_date <= CAST('{{ var("as_of", run_started_at) }}' AS DATE)
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY job_id
+    ORDER BY searched_at DESC
+) = 1
+```
+
+The snapshot references this intermediate model rather than the original Staging model:
+
+```sql
+{{ ref('stg_job_postings_current') }}
+```
+
+The `as_of` variable controls the historical cutoff date, while `ROW_NUMBER()` ensures that each `job_id` has only one record in the snapshot input.
+
+**My Implementation — Latest-State Snapshot Input**
+
+My implementation performs deduplication directly in `stg_job_postings`, so the snapshot can reference Staging without an additional ephemeral model:
+
+```sql
+{{ ref('stg_job_postings') }}
+```
+
+Both approaches provide one record per `job_id` to the snapshot, but they differ in how the current input state is selected.
+
+| Design Aspect | Reference Tutorial | My Implementation |
+|---|---|---|
+| Staging | Multiple observations per job | Latest record per job |
+| Snapshot input | Ephemeral `stg_job_postings_current` | Direct `stg_job_postings` |
+| Deduplication | `ROW_NUMBER()` in ephemeral model | `ROW_NUMBER()` in Staging |
+| Time control | Configurable `as_of` cutoff | Latest available state |
+| SCD2 strategy | `check` | `check` |
+| Main advantage | Historical cutoff-based input selection | Simpler transformation structure |
+
+**SCD2 Validation — Fraser Health**
+
+I validated my snapshot by changing `job_work_from_home` from `NULL` to `TRUE` for a Fraser Health Senior Data Engineer posting.
+
+After running `dbt snapshot`, the previous record received a `dbt_valid_to` timestamp, and a new current version was created with `dbt_valid_to = NULL`.
+
+This confirms that my implementation detects changes in monitored Staging attributes and preserves historical versions.
+
+**Engineering Trade-off**
+
+The reference tutorial provides additional flexibility through parameterized point-in-time input selection. My implementation prioritizes a simpler latest-state model, which is sufficient for the current analytical requirements.
+
+Both approaches track changes observed during snapshot executions. The `as_of` parameter controls source record selection; it does not automatically reconstruct historical SCD2 validity timestamps.
+
 ---
 
 ## 7. Data Quality Audit: Reconciliation & Engineering Trade-offs
