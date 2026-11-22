@@ -28,26 +28,6 @@ models:
               to: ref('skill_categories')
               field: skill_id
 
-  - name: stg_jobs_per_month
-    description: "Staged jobs per month summary."
-    columns:
-      - name: month_year
-        data_tests:
-          - not_null
-
-  - name: stg_monthly_summary
-    description: "Staged monthly summary with remote stats."
-    columns:
-      - name: summary_month
-        data_tests:
-          - unique  # another test to ensure that the summary_month is unique
-          - not_null
-      - name: total_postings
-        data_tests:
-          - not_null
-      - name: remote_postings
-        data_tests:
-          - not_null
   - name: skill_categories
     description: "Seed reference table for job skills."
     columns:

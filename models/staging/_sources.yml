@@ -1,15 +1,16 @@
+
 version: 2
 
 sources:
   - name: raw_sources
     database: dbt_luke
     schema: raw
+
     tables:
       - name: job_postings
         description: "Raw job postings data ingested from Parquet files."
         columns:
           - name: job_id
-            description: "Unique identifier for each job posting."
             data_tests:
               - unique:
                   config:
@@ -18,4 +19,17 @@ sources:
                   config:
                     severity: warn
 
-        
+      - name: raw_job_skills
+        description: "Raw job skills associated with job postings."
+        columns:
+          - name: job_id
+            data_tests:
+              - not_null:
+                  config:
+                    severity: warn
+
+          - name: skill_id
+            data_tests:
+              - not_null:
+                  config:
+                    severity: warn

@@ -148,13 +148,7 @@ FROM dbt_luke.source.job_postings;
 ```sql
 SELECT 'job_postings' AS table_name, COUNT(*) AS total_rows FROM dbt_luke.bronze.stg_job_postings
 UNION ALL
-SELECT 'jobs_per_month', COUNT(*) FROM dbt_luke.bronze.stg_jobs_per_month
-UNION ALL
-SELECT 'monthly_summary', COUNT(*) FROM dbt_luke.bronze.stg_monthly_summary
-UNION ALL
 SELECT 'raw_job_skills', COUNT(*) FROM dbt_luke.bronze.stg_job_skills
-UNION ALL
-SELECT 'top_locations', COUNT(*) FROM dbt_luke.bronze.stg_top_locations
 UNION ALL
 SELECT 'skill_categories', COUNT(*) FROM dbt_luke.bronze.skill_categories;
 ```
@@ -316,26 +310,7 @@ models:
           - relationships:
               to: ref('skill_categories')
               field: skill_id
-
-  - name: stg_jobs_per_month
-    columns:
-      - name: month_year
-        data_tests:
-          - not_null
-
-  - name: stg_monthly_summary
-    columns:
-      - name: summary_month
-        data_tests:
-          - unique
-          - not_null
-      - name: total_postings
-        data_tests:
-          - not_null
-      - name: remote_postings
-        data_tests:
-          - not_null
-          
+        
   - name: skill_categories
     columns:
       - name: skill_id
@@ -349,7 +324,7 @@ models:
 
 **Targeted Execution & Results**:
 ```bash
-dbt test --select stg_job_postings stg_job_skills stg_jobs_per_month stg_monthly_summary skill_categories --exclude test_type:singular
+dbt test --select stg_job_postings stg_job_skills skill_categories --exclude test_type:singular
 ```
 **Verification Result**: `PASS=14 WARN=0 ERROR=0 SKIP=0 TOTAL=14`.
 
