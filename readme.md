@@ -132,7 +132,7 @@ SELECT
     COUNT(CASE WHEN error IS NOT TRUE THEN 1 END) AS total_rows_valid1,
     COUNT(CASE WHEN error IS NOT TRUE AND job_id IS NOT NULL THEN 1 END) AS total_rows_valid,
     (SELECT COUNT(*) FROM dbt_luke.bronze.stg_job_postings) AS total_rows_bronze
-FROM dbt_luke.source.job_postings;
+FROM dbt_luke.raw.job_postings;
 ```
 **Audit Results**:
 - Source Total: **843,097**
