@@ -181,9 +181,58 @@ END AS job_work_from_home
 **Result:** A standardized nullable boolean field that preserves the distinction between confirmed and unknown remote-work status.
 
 ### 3.3 Complex Salary Text Extraction
-- **Period**: `regexp_extract` for `year/hour`, `nullif` for empties.
-- **Currency**: Extracts leading non-numeric chars, defaults to `USD`.
-- **Macro (`parse_salary`)**: Split delimiters, recognize `K`/`M`, `TRY_CAST`.
+
+**Problem — Inconsistent Salary Formats**
+
+Raw data profiling revealed that `job_salary` contains semi-structured salary information with different numeric formats and payment periods.
+
+**Data Profiling:**
+
+```sql
+SELECT DISTINCT job_salary
+FROM dbt_luke.raw.job_postings
+WHERE error IS NOT TRUE;
+```
+
+![Raw Salary Format Profiling](Assets/job_salary_format_profiling.png)
+
+*Figure: Raw salary values showing hourly and yearly pay periods, K abbreviations, salary ranges, and different numeric formats.*
+
+The key challenges identified were:
+
+- **Different payment periods:** `43.75–73.75 an hour` versus `109K–202K a year`.
+- **Abbreviated numbers:** `253K` represents 253,000.
+- **Salary ranges:** Values such as `109K–202K` require minimum and maximum salary extraction.
+- **Numeric formatting:** Values may contain commas and decimals, such as `112,597.33–152,810.66 a year`.
+
+**Solution — Reusable Salary Parsing Macro and SQL Transformations**
+
+A custom dbt macro, `parse_salary`, was implemented to:
+
+- Extract minimum and maximum salaries from ranges, or handle single-value salaries.
+- Handle different range delimiters (`-`, `~`, `–`).
+- Recognize `K` and `M` multipliers and convert abbreviated values into numeric amounts.
+- Remove thousands separators and use `TRY_CAST` for safe numeric conversion.
+
+Additional transformations in `stg_job_postings.sql`:
+
+- **Salary period:** Extract `year`, `hour`, `month`, `day`, or `week` using `REGEXP_EXTRACT`.
+- **Salary currency:** Extract leading currency symbols or text, defaulting to `USD` when a non-null salary has no currency prefix.
+- **Average salary:** Calculate the midpoint of `salary_min` and `salary_max`.
+
+**Result — Structured Salary Columns**
+
+The final Staging model produces:
+
+- `salary_min`
+- `salary_max`
+- `salary_avg`
+- `salary_period`
+- `salary_currency`
+
+The original `job_salary` column is retained for traceability and validation.
+
+**Engineering Consideration:** Hourly and yearly salaries cannot be directly compared. The Staging model extracts the payment period but does not automatically convert salaries into a common annual amount.
 
 ### 3.4 JSON Array Parsing with Custom Macro
 ```sql
