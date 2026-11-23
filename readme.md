@@ -1459,6 +1459,7 @@ The results illustrate how source records are cleaned, deduplicated, aggregated,
 | **Raw Layer** | raw_job_skills | 3,304,574 |
 | **Bronze Layer** | stg_job_postings | **491,140** |
 | **Bronze Layer** | stg_job_skills | 3,304,574 |
+| **Bronze Layer** | skill_categories | 1,422 |
 | **Silver Layer** | int_skill_demand | 960 |
 | **Gold Layer** | fct_job_postings | **491,140** |
 | **Gold Layer** | dim_company | 65,970 |
